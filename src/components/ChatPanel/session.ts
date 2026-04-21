@@ -81,25 +81,44 @@ export function turnsToMessages(turns: readonly Turn[]): Message[] {
 
 /**
  * Pull the human text out of an agent JSON envelope if the message was
- * persisted pre-fix (the ChatPanel used to store raw `{"action":"answer",
- * "text":"…"}` strings). Guard-clauses fall through on anything that
- * isn't recognisably an envelope — plain text, system notices, or user
- * messages pass untouched.
+ * persisted pre-fix. Handles two shapes:
+ *   1. Pure envelope: `{"action":"answer","text":"…"}` → returns text
+ *   2. Prose + trailing envelope (qwen3 double-format pattern) →
+ *      returns the envelope's text
  *
- * Duplicated here instead of imported from unwrapEnvelope.ts so the
- * session-persistence module stays dependency-free from component code
- * (session.ts is imported by hooks, components, and tests).
+ * Duplicated from unwrapEnvelope.ts on purpose — session.ts is imported
+ * by hooks, components, and tests, so it stays dependency-free from
+ * component-layer code.
  */
-function unwrapPersistedText(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return raw;
+function parseEnvelope(s: string): { text: string } | null {
   try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    if (typeof parsed.action === 'string' && typeof parsed.text === 'string') {
-      return parsed.text;
+    const p: unknown = JSON.parse(s);
+    if (
+      p !== null &&
+      typeof p === 'object' &&
+      !Array.isArray(p) &&
+      typeof (p as Record<string, unknown>).action === 'string' &&
+      typeof (p as Record<string, unknown>).text === 'string'
+    ) {
+      return { text: (p as Record<string, unknown>).text as string };
     }
   } catch {
     /* fall through */
+  }
+  return null;
+}
+
+function unwrapPersistedText(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return raw;
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    const parsed = parseEnvelope(trimmed);
+    if (parsed) return parsed.text;
+  }
+  const anchor = trimmed.search(/\{\s*"action"\s*:/);
+  if (anchor > 0 && trimmed.endsWith('}')) {
+    const parsed = parseEnvelope(trimmed.slice(anchor));
+    if (parsed) return parsed.text;
   }
   return raw;
 }

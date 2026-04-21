@@ -1,49 +1,59 @@
 /**
  * The agent loop sometimes returns its raw structured-JSON envelope to
  * the frontend instead of just the human-readable text. Smaller
- * instruction-tuned models (qwen3:30b-q4 notably) produce
+ * instruction-tuned models (qwen3:30b-q4 notably) sometimes double-emit
+ * — first a prose answer, then the JSON envelope wrapping the same text:
  *
- *   {"action": "answer", "text": "Hello, how can I help?"}
+ *   Hello there, how's it going?{"action": "answer", "text": "Hello there, how's it going?"}
  *
- * which the backend may not always strip before handing to the chat
- * panel. If we render that string verbatim, the user sees the JSON
- * literal — technically correct but deeply ugly.
+ * Both forms should render as a single clean sentence in the UI and via
+ * TTS. This helper handles three shapes:
  *
- * This helper pulls the `text` field out when the payload is an envelope
- * shape we recognise, and leaves anything else untouched. It's applied
- * at both render time and speak() time so the chat bubble AND Kokoro
- * read the clean human sentence. All JSON parsing is guarded so bad
- * input can never throw.
+ *   1. Pure envelope: `{"action": "answer", "text": "…"}` → returns `text`
+ *   2. Prose + trailing envelope: `Hello…{"action":"answer","text":"Hi"}`
+ *      → returns the envelope's `text` (the tail wins because when the
+ *      model double-formats, the envelope is the authoritative copy)
+ *   3. Anything else → returns unchanged
  *
- * Recognised shapes:
- *   - `{"action": "answer", "text": "…"}`  → pulls `text`
- *   - `{"action": "…",      "text": "…"}`  → pulls `text` (any action)
- *   - anything else                        → returned unchanged
- *
- * Not recognised / intentionally preserved:
- *   - Plain strings
- *   - JSON arrays
- *   - JSON objects without a `text` field (structured tool calls where
- *     the text extraction happens elsewhere)
+ * All JSON parsing is guarded so malformed input can never throw.
  */
+
+function tryParseEnvelope(s: string): { text: string } | null {
+  try {
+    const p: unknown = JSON.parse(s);
+    if (
+      p !== null &&
+      typeof p === 'object' &&
+      !Array.isArray(p) &&
+      typeof (p as Record<string, unknown>).action === 'string' &&
+      typeof (p as Record<string, unknown>).text === 'string'
+    ) {
+      return { text: (p as Record<string, unknown>).text as string };
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
 export function unwrapAgentEnvelope(raw: string): string {
   const trimmed = raw.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return raw;
+  if (trimmed.length === 0) return raw;
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return raw;
+  // Shape 1: the whole string is the envelope.
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    const parsed = tryParseEnvelope(trimmed);
+    if (parsed) return parsed.text;
   }
 
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return raw;
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  if (typeof obj.action === 'string' && typeof obj.text === 'string') {
-    return obj.text;
+  // Shape 2: prose + trailing envelope. Anchor on the `{"action"` marker
+  // because that's the specific envelope shape — arbitrary JSON objects
+  // inside prose (code samples, config snippets) shouldn't be touched.
+  const anchor = trimmed.search(/\{\s*"action"\s*:/);
+  if (anchor > 0 && trimmed.endsWith('}')) {
+    const tail = trimmed.slice(anchor);
+    const parsed = tryParseEnvelope(tail);
+    if (parsed) return parsed.text;
   }
 
   return raw;

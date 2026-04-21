@@ -7,6 +7,7 @@ import { useVoiceChat, type VoiceState } from '../hooks/useVoiceChat';
 import { useEventBus, type SunnyEvent } from '../hooks/useEventBus';
 import { useAgentStore, type PlanStep } from '../store/agent';
 import { useView } from '../store/view';
+import { unwrapAgentEnvelope } from './ChatPanel/unwrapEnvelope';
 
 type StepStatusKind = 'tool_call' | 'tool_result' | 'message' | 'error';
 type StepStatus = { text: string; kind: StepStatusKind };
@@ -425,10 +426,14 @@ export function OrbCore({ metrics, intensity = 1, latencyMs }: Props) {
   }, []);
 
   // Mirror the voice hook's streamed response into the orb footer.
+  // The agent loop can emit its raw `{action, text}` envelope on top of
+  // the streamed prose (concatenated when a small model double-formats
+  // its answer). Unwrapping here keeps the footer legible; the full
+  // raw stream still lives in the chat transcript panel if needed.
   useEffect(() => {
     const r = voice.response;
     if (typeof r === 'string' && r.length > 0) {
-      setSunnyLine(truncateTail(r));
+      setSunnyLine(truncateTail(unwrapAgentEnvelope(r)));
     }
   }, [voice.response]);
 
