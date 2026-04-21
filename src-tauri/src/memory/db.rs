@@ -168,19 +168,28 @@ fn init_reader_pool(dir: &Path) -> Result<(), String> {
 /// so callers always get a working connection.
 #[allow(dead_code)]
 pub fn with_reader<T>(f: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
-    // Try to borrow from the pool first.
-    if let Some(pool_mu) = READER_POOL.get() {
-        if let Ok(mut pool) = pool_mu.lock() {
-            if let Some(conn) = pool.pop() {
-                // Wrap in PoolGuard so push-back happens on drop.
-                let guard = PoolGuard { conn: Some(conn) };
-                let result = f(guard.conn.as_ref().unwrap());
-                // PoolGuard::drop handles the push-back automatically.
-                drop(guard);
-                return result;
-            }
-        }
+    // Pop a connection under the pool lock, then RELEASE the lock *before*
+    // running `f`. Holding the pool mutex across `f()` would:
+    //   (1) self-deadlock on the main thread — `PoolGuard::drop` re-locks
+    //       the same mutex to push the connection back. std::sync::Mutex is
+    //       non-reentrant, so the same-thread re-lock hangs forever (observed
+    //       on macOS as `__psynch_mutexwait` in a sample of the UI thread);
+    //   (2) serialize every reader query behind a single mutex, defeating
+    //       the whole point of a pool.
+    // The `and_then` chain below scopes the MutexGuard so it drops at the
+    // end of the closure, cleanly releasing the pool before the borrowed
+    // connection is used.
+    let borrowed = READER_POOL
+        .get()
+        .and_then(|pool_mu| pool_mu.lock().ok().and_then(|mut pool| pool.pop()));
+
+    if let Some(conn) = borrowed {
+        let guard = PoolGuard { conn: Some(conn) };
+        return f(guard.conn.as_ref().unwrap());
+        // `guard` drops at return; PoolGuard::drop re-locks pool_mu cleanly
+        // since the pop-site lock was already released above.
     }
+
     // Pool empty / uninitialised — fall back to the writer lock.
     with_conn(f)
 }
