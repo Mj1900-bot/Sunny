@@ -52,6 +52,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const BUILTIN_PRESETS: ReadonlyArray<ModelPreset> = [
+  { id: 'glm-51',       label: 'Z.AI → GLM-5.1',        provider: 'glm',      model: 'glm-5.1' },
   { id: 'oc-sunny',      label: 'OpenClaw → Sunny',       provider: 'openclaw', model: 'sunny' },
   { id: 'oc-alfred',    label: 'OpenClaw → Alfred',     provider: 'openclaw', model: 'alfred' },
   { id: 'oc-stephanie', label: 'OpenClaw → Stephanie',  provider: 'openclaw', model: 'stephanie' },

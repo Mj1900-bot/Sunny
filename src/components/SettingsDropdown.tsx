@@ -303,6 +303,10 @@ export function SettingsDropdown() {
                 onClick={() => patchSettings({ provider: 'ollama' })}
               >Ollama (local)</button>
               <button
+                className={settings.provider === 'glm' ? 'active' : ''}
+                onClick={() => patchSettings({ provider: 'glm', model: 'glm-5.1' })}
+              >Z.AI GLM</button>
+              <button
                 className={settings.provider === 'openclaw' ? 'active' : ''}
                 onClick={() => patchSettings({ provider: 'openclaw' })}
               >OpenClaw CLI</button>
