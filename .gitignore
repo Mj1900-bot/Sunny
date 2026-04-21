@@ -1,0 +1,51 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# SUNNY local state
+.sunny/
+
+# ts-rs writes relative to its CWD — when cargo test runs from src/
+# it recreates this orphan tree. Canonical bindings live in src/bindings/.
+src/src/
+
+# Playwright E2E artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ML model weights (> 100 MB, user downloads at setup)
+src-tauri/checkpoints/*.onnx
+src-tauri/data/*.bin
+
+# Secrets & env
+.env
+.env.*
+!.env.example
+
+# Rebrand scratchpad
+REBRAND.md

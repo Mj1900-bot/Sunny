@@ -1,0 +1,65 @@
+;;; sandbox-exec profile for sandbox_run_bash
+;;; Restricted PATH=/usr/bin:/bin only. No network, no writes outside sandbox.
+(version 1)
+
+(deny default)
+
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+
+(allow sysctl-read)
+(allow mach-lookup)
+(allow mach-register)
+(allow mach-task-name)
+(allow ipc-posix-shm)
+(allow system-socket)
+
+;;; ---- file reads: system binaries + sandbox dir ----
+(allow file-read*
+    (literal "/")
+    (subpath "/usr/bin")
+    (subpath "/usr/lib")
+    (subpath "/usr/share")
+    (subpath "/bin")
+    (subpath "/System/Library")
+    (subpath "/private/etc")
+    (subpath "/private/var/db/timezone")
+    (subpath "/private/var/folders")
+    (subpath "/usr/share/zoneinfo")
+    (subpath (param "SANDBOX_DIR"))
+    (subpath "/private/tmp")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/zero")
+)
+
+;;; ---- file writes: only sandbox dir ----
+(allow file-write*
+    (subpath (param "SANDBOX_DIR"))
+)
+
+(allow file-read-metadata
+    (literal "/dev")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/zero")
+)
+(allow file-ioctl
+    (literal "/dev/null")
+)
+
+(allow file-read-data
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+)
+(allow file-write-data
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+)
+
+;;; ---- network: DENY ALL ----
+(deny network*)

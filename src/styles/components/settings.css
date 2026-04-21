@@ -1,0 +1,90 @@
+/* Settings backdrop + panel */
+.settings-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 40px;
+  animation: fadeIn 0.2s ease;
+}
+.settings-panel {
+  width: 520px; max-height: 82vh; overflow: auto;
+  background: rgba(5, 15, 22, 0.98);
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(57, 229, 255, 0.15);
+  color: var(--ink); font-family: var(--label);
+  position: relative;
+}
+.settings-panel::before, .settings-panel::after {
+  content: ""; position: absolute; width: 11px; height: 11px;
+  border: 1px solid var(--cyan); pointer-events: none;
+}
+.settings-panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.settings-panel::after  { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.settings-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; border-bottom: 1px solid var(--line-soft);
+  background: linear-gradient(90deg, rgba(57, 229, 255, 0.14), transparent);
+}
+.settings-head h2 {
+  margin: 0; font-family: var(--display); font-weight: 800;
+  letter-spacing: 0.3em; color: var(--cyan); font-size: 14px;
+}
+.settings-head button {
+  all: unset; cursor: pointer; font-size: 24px; line-height: 1;
+  color: var(--ink-2); padding: 0 8px;
+}
+.settings-head button:hover { color: var(--cyan); }
+
+.settings-panel section {
+  padding: 16px 18px; border-bottom: 1px solid var(--line-soft);
+}
+.settings-panel section h3 {
+  margin: 0 0 10px; font-family: var(--display);
+  font-size: 11px; letter-spacing: 0.25em; color: var(--cyan);
+  font-weight: 700;
+}
+.settings-panel label {
+  display: block; margin: 10px 0;
+  font-family: var(--display); font-size: 10.5px; letter-spacing: 0.2em;
+  color: var(--ink-2); font-weight: 600; text-transform: uppercase;
+}
+.settings-panel label .v {
+  float: right; color: var(--cyan); font-family: var(--mono);
+  font-size: 11px; letter-spacing: 0;
+}
+.settings-panel label.switch {
+  display: flex; align-items: center; gap: 10px;
+  text-transform: none; font-family: var(--label); font-size: 12px;
+  color: var(--ink); letter-spacing: 0.04em;
+}
+.settings-panel label.switch input { width: 16px; height: 16px; accent-color: var(--cyan); }
+.settings-panel .row {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+}
+.settings-panel .row button {
+  all: unset; cursor: pointer; padding: 6px 10px;
+  border: 1px solid var(--line-soft); color: var(--cyan);
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
+  font-weight: 600; text-transform: uppercase;
+  background: rgba(57, 229, 255, 0.03);
+}
+.settings-panel .row button.active {
+  background: rgba(57, 229, 255, 0.25); color: #fff;
+  border-color: var(--cyan);
+}
+.settings-panel input[type="range"] { width: 100%; accent-color: var(--cyan); margin-top: 4px; }
+.settings-panel input[type="text"] {
+  width: 100%; margin-top: 8px;
+  background: rgba(4, 10, 16, 0.7); color: var(--ink);
+  border: 1px solid var(--line-soft); padding: 8px 10px;
+  font-family: var(--mono); font-size: 12px;
+}
+.settings-panel .hint {
+  margin: 8px 0 0; font-size: 11px; color: var(--ink-dim); font-family: var(--mono);
+}
+.settings-panel .hint code {
+  color: var(--cyan); background: rgba(57, 229, 255, 0.08);
+  padding: 1px 5px; border-radius: 2px;
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

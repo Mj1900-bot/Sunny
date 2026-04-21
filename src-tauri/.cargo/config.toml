@@ -1,0 +1,7 @@
+# Direct ts-rs to emit all TypeScript bindings into the frontend source tree
+# (`src/bindings/`). Without this the default is `src-tauri/bindings/`, which
+# the Vite tree can't import. Regeneration is a one-liner — `cargo test --lib
+# export_bindings_` — and this config keeps the output path consistent across
+# IDE runs, CI, and manual invocations.
+[env]
+TS_RS_EXPORT_DIR = { value = "../src/bindings", relative = true }

@@ -1,0 +1,95 @@
+;;; sandbox-exec profile for sandbox_run_python
+;;; Deny-default: every syscall family starts denied, then we allow
+;;; exactly what python3 needs to run in-process.
+(version 1)
+
+;;; ---- default posture: deny everything ----
+(deny default)
+
+;;; ---- process / signals ----
+;;; Allow the process to exist and run its own threads.
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+
+;;; ---- sysctl reads (needed by libc startup) ----
+(allow sysctl-read)
+
+;;; ---- mach IPC (required for libSystem bootstrap) ----
+(allow mach-lookup)
+(allow mach-register)
+
+;;; ---- POSIX IPC ----
+(allow ipc-posix-shm)
+
+;;; ---- file reads: interpreter, stdlib, system libs ----
+(allow file-read*
+    (literal "/")
+    (subpath "/usr/lib")
+    (subpath "/usr/local/lib")
+    (subpath "/System/Library")
+    (subpath "/Library/Python")
+    (subpath "/usr/bin")
+    (subpath "/bin")
+    (subpath "/private/etc")
+    (subpath "/usr/share/zoneinfo")
+    (subpath "/usr/share/locale")
+    (literal "/private/var/db/timezone")
+    (subpath "/private/var/db/timezone")
+    (subpath "/private/var/folders")
+    (subpath "/private/var/select")
+    (subpath "/var/select")
+    (subpath "/Applications/Xcode.app")
+    (subpath "/Library/Developer")
+    ;; Homebrew python on Apple Silicon
+    (subpath "/opt/homebrew")
+    ;; Intel Homebrew
+    (subpath "/usr/local")
+    ;; nix/pyenv
+    (subpath "/nix")
+    (subpath (param "SANDBOX_DIR"))
+    (subpath "/private/tmp")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/zero")
+)
+
+;;; ---- file writes: sandbox dir + stdio ----
+(allow file-write*
+    (subpath (param "SANDBOX_DIR"))
+    (subpath "/dev")
+)
+
+;;; ---- device access ----
+(allow file-read-metadata
+    (literal "/dev")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/zero")
+    (subpath "/private/var/select")
+    (subpath "/var/select")
+)
+(allow file-ioctl
+    (literal "/dev/null")
+)
+
+;;; ---- POSIX pipes (stdin/stdout/stderr) ----
+(allow file-read-data
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+)
+(allow file-write-data
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+    (literal "/dev/stdin")
+)
+
+;;; ---- network: DENY ALL ----
+(deny network*)
+
+;;; ---- clock ----
+(allow system-socket)
+(allow mach-task-name)

@@ -1,0 +1,24 @@
+/* ─────────────────────────────────────────────────────────────────
+   Settings-driven body modifiers
+   ─────────────────────────────────────────────────────────────────
+   `body.reduced-motion` is set from Settings → Advanced and mirrors
+   the OS-level `prefers-reduced-motion` preference. Instead of
+   disabling a hand-picked list, we blanket-strip transitions and
+   animations app-wide; HUD loses its pulse but gains headroom for
+   vestibular-sensitive users.                                      */
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* `body.compact-mode` squeezes the HUD for small laptop screens:
+   tighter module-view gutters and a notch smaller body font. The
+   Orbitron display heads stay loud — what the user reads changes,
+   the hierarchy doesn't.                                            */
+body.compact-mode .module-view .body { padding: 10px !important; }
+body.compact-mode .module-view .body { font-size: 12px; }
+body.compact-mode .module-view h3    { font-size: 12px; }
+body.compact-mode .module-view .section { padding: 8px; margin-bottom: 8px; }

@@ -1,0 +1,41 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg: #02060a;
+  --cyan: #39e5ff;
+  --cyan-2: #6bf1ff;
+  --cyan-3: #9dfcff;
+  --amber: #ffb347;
+  --red: #ff4d5e;
+  --green: #7dff9a;
+  --violet: #b48cff;
+  --teal: #00d2b4;
+  --pink: #ff85e0;
+  --gold: #ffd166;
+  --lime: #c5ff6b;
+  --blue: #8ca9ff;
+  --coral: #ff8a7a;
+  --line: rgba(57, 229, 255, 0.55);
+  --line-soft: rgba(57, 229, 255, 0.22);
+  --panel: rgba(6, 14, 22, 0.7);
+  --panel-2: rgba(4, 10, 16, 0.82);
+  --ink: #e6f8ff;
+  --ink-2: #a9d4e5;
+  --ink-dim: #6f9fb2;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --display: 'Orbitron', sans-serif;
+  --label: 'Inter', sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  color: var(--ink);
+  font-family: var(--label);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}

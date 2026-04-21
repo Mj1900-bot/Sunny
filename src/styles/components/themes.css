@@ -1,0 +1,13 @@
+/* Theme variants */
+body.theme-amber   { --cyan: #ffb74a; --cyan-2: #ffd77a; --cyan-3: #fff0c7;
+  --line: rgba(255, 183, 74, 0.55); --line-soft: rgba(255, 183, 74, 0.22);
+  --ink: #fff2d8; --ink-2: #d8b77e; --ink-dim: #a58154; }
+body.theme-green   { --cyan: #7dff9a; --cyan-2: #a5ffb8; --cyan-3: #d2ffd9;
+  --line: rgba(125, 255, 154, 0.55); --line-soft: rgba(125, 255, 154, 0.22);
+  --ink: #ecffec; --ink-2: #a7e3b0; --ink-dim: #6ec98a; }
+body.theme-violet  { --cyan: #b48cff; --cyan-2: #d4b8ff; --cyan-3: #ecdcff;
+  --line: rgba(180, 140, 255, 0.55); --line-soft: rgba(180, 140, 255, 0.22);
+  --ink: #f1e6ff; --ink-2: #c5b4e8; --ink-dim: #9c8fcf; }
+body.theme-magenta { --cyan: #ff5ec8; --cyan-2: #ff8fdd; --cyan-3: #ffc3ec;
+  --line: rgba(255, 94, 200, 0.55); --line-soft: rgba(255, 94, 200, 0.22);
+  --ink: #ffe3f3; --ink-2: #eaa6cf; --ink-dim: #c28aa9; }

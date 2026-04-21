@@ -1,0 +1,148 @@
+[package]
+name = "sunny"
+version = "0.1.0"
+description = "Sunny — Personal Assistant HUD"
+authors = ["Sunny"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "sunny_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# The hardened browser module uses a pluggable Tor transport. The default
+# build supports system Tor (probes 127.0.0.1:9050) and user-supplied
+# SOCKS5/HTTPS proxies; enabling this feature bundles arti-client so the
+# app ships with its own Tor client. Builds with this feature grow the
+# dep graph by ~200 transitive crates and add ~3-5 minutes of cold
+# compile time — the default build is deliberately kept slim.
+bundled-tor = ["arti-client", "tor-rtcompat"]
+# Headless confirm-prompt sink for integration tests.  Compiled in only when
+# this feature is explicitly enabled (e.g. `cargo test --features test-sink`).
+# NEVER enable in production builds.
+test-sink = []
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.10.3", features = ["macos-private-api", "tray-icon", "image-png", "unstable", "protocol-asset"] }
+tauri-plugin-log = "2"
+sysinfo = "0.32"
+battery = "0.7"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["time", "sync", "net", "io-util", "process", "rt-multi-thread", "macros"] }
+async-recursion = "1.1"
+portable-pty = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks", "cookies"] }
+futures-util = "0.3"
+url = "2"
+
+# Optional bundled Tor — off by default. See the `bundled-tor` feature.
+arti-client = { version = "0.23", optional = true, default-features = false, features = ["rustls", "tokio"] }
+tor-rtcompat = { version = "0.23", optional = true, default-features = false, features = ["rustls", "tokio"] }
+dirs = "5"
+dirs-next = "2"
+base64 = "0.22"
+enigo = "0.3"
+# SQLite for the memory subsystem — bundled so we don't depend on the host's
+# libsqlite3 (avoids the "symbol not found" class of issues on notarized .app
+# bundles). The `backup` feature is used by the migration path.
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+libc = "0.2.185"
+# FTS5 + FTS match ranking are enabled by default in `bundled`.
+
+# Agentic swarm toolkit (Wave 1) — previously added, re-asserting after a
+# linter pass stripped them. Required by tools_weather / tools_web /
+# tools_compute / tools_macos / tools_browser / agent_loop.
+chrono-tz = "0.9"
+scraper = "0.19"
+evalexpr = "12.0"
+regex = "1.10"
+sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+ego-tree = "0.6"
+
+# Native audio capture. Replaces the sox/ffmpeg subprocess recorder with an
+# in-process cpal stream so the WKWebView frontend can piggy-back on the same
+# capture (via `sunny://voice.level` events) without fighting macOS for the
+# mic — getUserMedia + a sibling capture process on the same input device
+# serialises on macOS and starves whichever owner loses the race. `hound`
+# provides a straightforward 16-bit WAV encoder for whisper-cli to read.
+cpal = "0.15"
+hound = "3.5"
+ts-rs = "10.1.0"
+
+# JSON Schema validation for LLM-emitted tool arguments. We validate
+# against the `input_schema` fragments in `agent_loop::catalog` BEFORE
+# dispatch so malformed calls surface a structured, retriable error
+# back to the model instead of crashing the Rust handler. Default
+# features (cli / resolve-http / resolve-file) are disabled — we only
+# use inline schemas, no remote $ref resolution, no CLI entry-point.
+jsonschema = { version = "0.18", default-features = false }
+once_cell = "1.19"
+
+# Distributed plugin registration (sprint-11). Lets tool modules
+# submit their `ToolSpec` into a global registry at link time via
+# `inventory::submit!`, so adding a new tool no longer requires
+# editing `dispatch.rs`'s giant `match`. See `agent_loop::tool_trait`
+# for the contract and `agent_loop::tools::*` for pilot tools.
+inventory = "0.3"
+
+# Sprint-12 η — ed25519 provenance for skill manifests. Keypair lives at
+# `~/.sunny/identity/ed25519.key` (0600). Private key never leaves Rust;
+# the frontend only ever calls `sign_skill` / `verify_skill`. The
+# `rand_core` we pull alongside provides the OS-RNG the keygen consumes.
+# See `identity.rs` for the full contract.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "rand_core", "fast", "zeroize"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+hex = "0.4"
+
+# Sprint-13 η — native save-file dialog for skill export.  `rfd` is the
+# rustup-community file-dialog crate; on macOS its default backend is
+# NSSavePanel via AppKit, which is exactly what we want (no GTK dep, no
+# pulled-in Qt).  We invoke it from a blocking task in the Tauri
+# command to avoid stalling the async reactor during the user's pick.
+rfd = "0.14"
+anyhow = "1.0"
+# vendored-openssl statically links OpenSSL into the binary via libgit2-sys
+# and libssh2-sys (see `cargo tree -i openssl-sys`). Without it, the release
+# build dynamically links /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib,
+# and the hardened runtime applied in patch-info-plist.sh (--options runtime)
+# rejects the dylib at launch with "mapping process and mapped file
+# (non-platform) have different Team IDs" — Homebrew's signature ≠ the app's.
+git2 = { version = "0.19", features = ["vendored-openssl"] }
+shellexpand = "3.1"
+
+# Document extraction tools (Sprint documents)
+# calamine: pure-Rust XLSX/XLS/ODS/CSV reader. MIT/Apache-2.0.
+calamine = { version = "0.25", features = ["dates"] }
+# csv: pure-Rust RFC-4180 reader/writer. MIT/Apache-2.0.
+csv = "1.3"
+# lopdf: pure-Rust PDF parser. MIT.
+lopdf = "0.34"
+# zip: pure-Rust ZIP archive reader (for DOCX). MIT/Apache-2.0.
+zip = { version = "2.1", default-features = false, features = ["deflate"] }
+
+
+# CDP-based agentic browser (Sprint-15).  chromiumoxide drives an installed
+# Chrome/Chromium via the DevTools Protocol so SUNNY can click, type, and
+# evaluate JS without touching the user's Safari session.  Uses tokio (default)
+# and does not bundle Chromium — Chrome/Chromium must be installed on the host.
+# The fetcher feature is opt-in and not enabled here.
+chromiumoxide = { version = "0.9" }
+
+[dev-dependencies]
+scopeguard = "1.2.0"
+tempfile = "3"
+serial_test = "3"

@@ -1,0 +1,68 @@
+.viewport {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: radial-gradient(1400px 800px at 50% 55%, #06151f 0%, #02060a 55%, #000 100%);
+}
+
+.drag-region {
+  position: fixed;
+  top: 0;
+  left: 80px;
+  right: 0;
+  height: 28px;
+  z-index: 10;
+  -webkit-app-region: drag;
+  pointer-events: auto;
+  background: transparent;
+}
+
+.stage {
+  width: 1600px;
+  height: 900px;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(var(--sx, 1), var(--sy, 1));
+  transform-origin: center center;
+  background:
+    radial-gradient(1000px 620px at 50% 55%, rgba(20, 70, 95, 0.35), transparent 70%),
+    linear-gradient(180deg, #02080c 0%, #030a10 100%);
+  overflow: hidden;
+  border: 1px solid rgba(57, 229, 255, 0.25);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.9),
+    0 40px 140px rgba(0, 0, 0, 0.85),
+    inset 0 0 140px rgba(57, 229, 255, 0.05);
+}
+
+.grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(57, 229, 255, 0.04) 1px, transparent 1px) 0 0 / 40px 40px,
+    linear-gradient(90deg, rgba(57, 229, 255, 0.04) 1px, transparent 1px) 0 0 / 40px 40px;
+  mask-image: radial-gradient(1100px 620px at 50% 50%, black 30%, transparent 78%);
+}
+
+.scan {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(57, 229, 255, 0.03) 0 1px, transparent 1px 3px);
+  mix-blend-mode: screen;
+  animation: scanShift 8s linear infinite;
+}
+
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 260px #000, inset 0 0 80px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes scanShift {
+  from { background-position: 0 0; }
+  to   { background-position: 0 80px; }
+}

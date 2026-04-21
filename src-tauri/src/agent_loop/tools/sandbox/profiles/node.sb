@@ -1,0 +1,72 @@
+;;; sandbox-exec profile for sandbox_run_node
+;;; Node.js needs slightly more mach IPC than python for its V8 JIT.
+(version 1)
+
+(deny default)
+
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+
+(allow sysctl-read)
+(allow mach-lookup)
+(allow mach-register)
+(allow mach-task-name)
+(allow ipc-posix-shm)
+(allow system-socket)
+
+;;; ---- file reads ----
+(allow file-read*
+    (literal "/")
+    (subpath "/usr/lib")
+    (subpath "/usr/local/lib")
+    (subpath "/System/Library")
+    (subpath "/usr/bin")
+    (subpath "/bin")
+    (subpath "/private/etc")
+    (subpath "/usr/share/zoneinfo")
+    (subpath "/usr/share/locale")
+    (subpath "/private/var/db/timezone")
+    (subpath "/private/var/folders")
+    ;; Homebrew node
+    (subpath "/opt/homebrew")
+    (subpath "/usr/local")
+    ;; nvm
+    (subpath (param "HOME_FAKE"))
+    (subpath (param "SANDBOX_DIR"))
+    (subpath "/private/tmp")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/zero")
+)
+
+;;; ---- file writes: sandbox dir + stdio ----
+(allow file-write*
+    (subpath (param "SANDBOX_DIR"))
+    (subpath "/dev")
+)
+
+(allow file-read-metadata
+    (literal "/dev")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/zero")
+)
+(allow file-ioctl
+    (literal "/dev/null")
+)
+
+(allow file-read-data
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+)
+(allow file-write-data
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+)
+
+;;; ---- network: DENY ALL ----
+(deny network*)
