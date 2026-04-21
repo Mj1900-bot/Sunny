@@ -132,6 +132,15 @@ pub mod cost_rates {
     /// GLM-5.1 via Z.AI Coding Plan — output tokens (USD / 1 000 tokens).
     pub const GLM_OUTPUT_PER_1K: f64 = 0.0012;
 
+    /// Moonshot Kimi K2.6 via api.moonshot.ai — published 2026-04-20.
+    /// input: $0.60 / M tokens → $0.0006 / 1 000.
+    pub const KIMI_INPUT_PER_1K: f64 = 0.0006;
+    /// output: $2.50 / M tokens → $0.0025 / 1 000.
+    pub const KIMI_OUTPUT_PER_1K: f64 = 0.0025;
+    /// Moonshot bills cached prompt-prefix hits at ~10% of the input
+    /// rate; mirrors Anthropic's cache-read discount model.
+    pub const KIMI_CACHE_READ_PER_1K: f64 = KIMI_INPUT_PER_1K * 0.10;
+
     /// Ollama is local; cost is always zero regardless of token counts.
     pub const OLLAMA_COST: f64 = 0.0;
 }
@@ -168,6 +177,13 @@ pub fn cost_estimate(
             let input_cost  = input  as f64 / 1_000.0 * GLM_INPUT_PER_1K;
             let output_cost = output as f64 / 1_000.0 * GLM_OUTPUT_PER_1K;
             input_cost + output_cost
+        }
+        "kimi" => {
+            let input_cost  = input       as f64 / 1_000.0 * KIMI_INPUT_PER_1K;
+            let output_cost = output      as f64 / 1_000.0 * KIMI_OUTPUT_PER_1K;
+            let read_cost   = cache_read  as f64 / 1_000.0 * KIMI_CACHE_READ_PER_1K;
+            let _ = cache_create;
+            input_cost + output_cost + read_cost
         }
         "ollama" => OLLAMA_COST,
         _ => 0.0,

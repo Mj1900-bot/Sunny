@@ -399,8 +399,9 @@ fn system_prompt() -> &'static str {
 use crate::agent_loop::providers::anthropic::{
     ANTHROPIC_URL, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL, LLM_TIMEOUT_SECS, USER_AGENT,
 };
-use crate::agent_loop::providers::auth::{anthropic_key_present, zai_key_present};
+use crate::agent_loop::providers::auth::{anthropic_key_present, moonshot_key_present, zai_key_present};
 use crate::agent_loop::providers::glm::{DEFAULT_GLM_MODEL, GLM_URL};
+use crate::agent_loop::providers::kimi::{DEFAULT_KIMI_MODEL, KIMI_URL};
 use crate::agent_loop::providers::ollama::{pick_ollama_model, OLLAMA_URL};
 
 #[derive(Deserialize, Debug)]
@@ -458,6 +459,14 @@ pub async fn llm_oneshot(
             }
             "glm"
         }
+        "kimi" | "agent:kimi" => {
+            if !moonshot_key_present().await {
+                return Err(
+                    "MOONSHOT_API_KEY not configured — run scripts/install-moonshot-key.sh <key>".into(),
+                );
+            }
+            "kimi"
+        }
         "" | "auto" | "agent:auto" => {
             if anthropic_key_present().await {
                 "anthropic"
@@ -490,6 +499,13 @@ pub async fn llm_oneshot(
                 .clone()
                 .unwrap_or_else(|| DEFAULT_GLM_MODEL.to_string());
             glm_oneshot(&model, &req.system, &req.messages, max_tokens).await?
+        }
+        "kimi" => {
+            let model = req
+                .model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_KIMI_MODEL.to_string());
+            kimi_oneshot(&model, &req.system, &req.messages, max_tokens).await?
         }
         _ => unreachable!(),
     };
@@ -755,6 +771,68 @@ async fn glm_oneshot(
         .and_then(|c| c.as_str())
         .unwrap_or("");
     Ok(reasoning.to_string())
+}
+
+async fn kimi_oneshot(
+    model: &str,
+    system: &str,
+    messages: &[ChatMessage],
+    max_tokens: u32,
+) -> Result<String, String> {
+    use std::time::Duration;
+
+    let key = crate::secrets::moonshot_api_key().await.ok_or_else(|| {
+        "MOONSHOT_API_KEY not configured — run scripts/install-moonshot-key.sh <key>".to_string()
+    })?;
+
+    // Moonshot's /v1/chat/completions is OpenAI-compatible: system goes
+    // in as the first message, assistant tool_calls echo verbatim, usage
+    // block uses prompt_tokens/completion_tokens/cached_tokens.
+    let mut msgs: Vec<serde_json::Value> = Vec::with_capacity(messages.len() + 1);
+    msgs.push(serde_json::json!({ "role": "system", "content": system }));
+    msgs.extend(sanitize_messages(messages));
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": msgs,
+        "temperature": 0.7,
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+
+    let client = crate::http::client();
+    let resp = tokio::time::timeout(
+        Duration::from_secs(LLM_TIMEOUT_SECS),
+        client
+            .post(KIMI_URL)
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json")
+            .header("user-agent", USER_AGENT)
+            .json(&body)
+            .send(),
+    )
+    .await
+    .map_err(|_| "kimi timed out".to_string())?
+    .map_err(|e| format!("kimi connect: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("kimi http {status}: {body}"));
+    }
+
+    let parsed: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("kimi decode: {e}"))?;
+    let content = parsed
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    Ok(content.to_string())
 }
 
 #[cfg(test)]

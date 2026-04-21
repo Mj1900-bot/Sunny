@@ -14,7 +14,7 @@ export type SettingsSnapshot = Settings;
 /** Providers Sunny can talk to. Must stay in sync with the Rust
  *  `match provider` arm in src-tauri/src/ai.rs — each string here has a
  *  corresponding backend route. */
-export type ProviderId = 'ollama' | 'openclaw' | 'glm';
+export type ProviderId = 'ollama' | 'openclaw' | 'glm' | 'kimi';
 
 export type ModelPreset = {
   readonly id: string;

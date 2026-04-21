@@ -88,4 +88,9 @@ pub enum Backend {
     /// Z.AI's GLM-5.1 via the OpenAI-compatible Chat Completions API.
     /// Selected explicitly via `provider == "glm"` / `"agent:glm"`.
     Glm,
+    /// Moonshot's Kimi K2.6 (and K2.x family) via the OpenAI-compatible
+    /// `api.moonshot.ai/v1/chat/completions` endpoint. Purpose-built for
+    /// agentic coding + long-horizon tool use. Selected explicitly via
+    /// `provider == "kimi"` / `"agent:kimi"`.
+    Kimi,
 }

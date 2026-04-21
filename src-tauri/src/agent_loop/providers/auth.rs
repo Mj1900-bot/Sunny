@@ -11,3 +11,10 @@ pub async fn zai_key_present() -> bool {
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false)
 }
+
+pub async fn moonshot_key_present() -> bool {
+    crate::secrets::moonshot_api_key()
+        .await
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}

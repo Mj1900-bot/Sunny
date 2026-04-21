@@ -85,7 +85,8 @@ use super::providers::ollama::{
     SPECULATIVE_DRAFT_MODEL,
 };
 use super::providers::glm::{glm_turn, DEFAULT_GLM_MODEL};
-use super::providers::auth::{anthropic_key_present, zai_key_present};
+use super::providers::kimi::{kimi_turn, DEFAULT_KIMI_MODEL};
+use super::providers::auth::{anthropic_key_present, moonshot_key_present, zai_key_present};
 use super::prompts::{compose_system_prompt, default_system_prompt, query_hint, seed_user_profile_if_empty};
 use super::memory_integration::{auto_remember_from_user, build_memory_digest, write_run_episodic};
 use super::helpers::{emit_agent_step, finalize_with_note, message_to_value, pretty_short, truncate, extract_system_prompt};
@@ -730,7 +731,8 @@ async fn call_llm(ctx: &mut LoopCtx, iteration: u32) -> Result<TurnOutcome, Stri
         task_class,
         is_retry_after_tool_error: false,
         inside_plan_execute: false,
-        inside_reflexion_critic: iteration > 1 && ctx.backend == Backend::Glm,
+        inside_reflexion_critic: iteration > 1
+            && (ctx.backend == Backend::Glm || ctx.backend == Backend::Kimi),
         reflexion_iteration: (iteration.saturating_sub(1)) as u8,
         quality_mode,
         privacy_sensitive,
@@ -759,6 +761,25 @@ async fn call_llm(ctx: &mut LoopCtx, iteration: u32) -> Result<TurnOutcome, Stri
         } else {
             anthropic_turn(&ctx.model, &ctx.system, &ctx.history).await?
         }
+    } else if ctx.backend == Backend::Kimi {
+        // Kimi explicit-override bypass. The K1 tier router (QuickThink/
+        // Cloud/Premium) only knows about Ollama / GLM / ClaudeCode — it
+        // has no Kimi tier. When the user explicitly picks Kimi in
+        // Settings, honour that the same way the Anthropic bypass above
+        // honours an explicit Anthropic pick, and dispatch straight to
+        // kimi_turn. Tier routing re-applies automatically for any other
+        // provider.
+        log::info!(
+            "routed: tier=kimi model={} class={:?} privacy={} cost_status={:?} reasoning={}",
+            ctx.model,
+            task_class,
+            privacy_sensitive,
+            cost_status,
+            decision.reasoning,
+        );
+        kimi_turn(&ctx.model, &ctx.system, &ctx.history)
+            .await
+            .map_err(|e| format!("kimi_unavailable: {e}"))?
     } else {
         // Apply tier routing: translate Tier to Backend + model_id.
         let (routed_backend, routed_model) = provider_from_tier(decision.tier);
@@ -1052,10 +1073,11 @@ async fn run_staged_tools(ctx: &mut LoopCtx, iteration: u32) {
                 "name": call.name,
                 "content": out.wrapped,
             }),
-            // OpenAI-compatible (Z.AI): tool results come back as
-            // `role: "tool"` messages keyed by `tool_call_id` — the id
-            // GLM gave us on the previous assistant turn.
-            Backend::Glm => json!({
+            // OpenAI-compatible (Z.AI + Moonshot): tool results come
+            // back as `role: "tool"` messages keyed by `tool_call_id`
+            // — the id the provider gave us on the previous assistant
+            // turn.
+            Backend::Glm | Backend::Kimi => json!({
                 "role": "tool",
                 "tool_call_id": call.id,
                 "name": call.name,
@@ -1071,7 +1093,7 @@ async fn run_staged_tools(ctx: &mut LoopCtx, iteration: u32) {
                 "content": tool_results,
             }));
         }
-        Backend::Ollama | Backend::Glm => {
+        Backend::Ollama | Backend::Glm | Backend::Kimi => {
             ctx.history.extend(tool_results);
         }
     }
@@ -1449,6 +1471,14 @@ async fn pick_backend(req: &ChatRequest) -> Result<Backend, String> {
                 }
                 return Ok(Backend::Glm);
             }
+            "kimi" => {
+                if !moonshot_key_present().await {
+                    return Err(
+                        "MOONSHOT_API_KEY not configured — run scripts/install-moonshot-key.sh <key>".into(),
+                    );
+                }
+                return Ok(Backend::Kimi);
+            }
             // "auto" / "" / unknown → fall through to heuristic routing.
             _ => {}
         }
@@ -1533,6 +1563,7 @@ async fn pick_model(req: &ChatRequest, backend: Backend) -> String {
         // (DEFAULT_OLLAMA_MODEL and PREFERRED_OLLAMA_MODEL are identical constants).
         Backend::Ollama => pick_ollama_model().await,
         Backend::Glm => DEFAULT_GLM_MODEL.to_string(),
+        Backend::Kimi => DEFAULT_KIMI_MODEL.to_string(),
     }
 }
 

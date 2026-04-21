@@ -52,6 +52,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const BUILTIN_PRESETS: ReadonlyArray<ModelPreset> = [
+  { id: 'kimi-26',      label: 'Moonshot → Kimi K2.6',  provider: 'kimi',     model: 'kimi-k2.6' },
   { id: 'glm-51',       label: 'Z.AI → GLM-5.1',        provider: 'glm',      model: 'glm-5.1' },
   { id: 'oc-sunny',      label: 'OpenClaw → Sunny',       provider: 'openclaw', model: 'sunny' },
   { id: 'oc-alfred',    label: 'OpenClaw → Alfred',     provider: 'openclaw', model: 'alfred' },
@@ -85,6 +86,7 @@ const OLLAMA_FALLBACK_PICKS: ReadonlyArray<string> = [
 type ProviderId =
   | 'anthropic'
   | 'zai'
+  | 'moonshot'
   | 'openai'
   | 'openrouter'
   | 'elevenlabs'
@@ -138,6 +140,15 @@ const PROVIDERS: ReadonlyArray<ProviderMeta> = [
     keychainService: 'sunny-zai-api-key',
     placeholder: 'z-ai-…  or  glm-…',
     docsUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+  },
+  {
+    id: 'moonshot',
+    label: 'Moonshot (Kimi)',
+    purpose: 'Kimi K2.6 — 1T/32B MoE with agent-swarm coordination, #1 on SWE-Bench Pro.',
+    envNames: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
+    keychainService: 'sunny-moonshot-api-key',
+    placeholder: 'sk-…',
+    docsUrl: 'https://platform.moonshot.ai/console/api-keys',
   },
   {
     id: 'elevenlabs',
@@ -231,7 +242,7 @@ export function ModelsTab(): JSX.Element {
     const s = await invokeSafe<SecretsStatus>('secrets_status');
     setSecrets(
       s ?? {
-        anthropic: false, zai: false, openai: false,
+        anthropic: false, zai: false, moonshot: false, openai: false,
         openrouter: false, elevenlabs: false, wavespeed: false,
       },
     );
@@ -313,7 +324,15 @@ export function ModelsTab(): JSX.Element {
     const id = `user-${Date.now().toString(36)}`;
     const next: ModelPreset = {
       id,
-      label: `${settings.provider === 'openclaw' ? 'OpenClaw' : settings.provider === 'glm' ? 'Z.AI' : 'Ollama'} → ${settings.model}`,
+      label: `${
+        settings.provider === 'openclaw'
+          ? 'OpenClaw'
+          : settings.provider === 'glm'
+          ? 'Z.AI'
+          : settings.provider === 'kimi'
+          ? 'Moonshot'
+          : 'Ollama'
+      } → ${settings.model}`,
       provider: settings.provider,
       model: settings.model,
     };
@@ -372,11 +391,19 @@ export function ModelsTab(): JSX.Element {
           >
             Z.AI GLM
           </button>
+          <button
+            style={chipStyle(settings.provider === 'kimi')}
+            onClick={() => patchSettings({ provider: 'kimi', model: 'kimi-k2.6' })}
+          >
+            Kimi K2.6
+          </button>
           <span style={{ ...hintStyle, marginTop: 0, marginLeft: 8 }}>
             {settings.provider === 'openclaw'
               ? 'Talks to the OpenClaw bridge socket.'
               : settings.provider === 'glm'
               ? 'Streams from Z.AI\'s GLM-5.1 (Coding Plan). Needs ZAI_API_KEY.'
+              : settings.provider === 'kimi'
+              ? 'Streams from Moonshot\'s Kimi K2.6 (1T / 32B active, SWE-Bench #1). Needs MOONSHOT_API_KEY.'
               : 'Streams from a local Ollama daemon — works fully offline.'}
           </span>
         </div>

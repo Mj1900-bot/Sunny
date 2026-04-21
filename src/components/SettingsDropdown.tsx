@@ -11,7 +11,7 @@ const SANDBOXES = ['main', 'alfred', 'stephanie', 'test-agent'] as const;
 const OPENCLAW_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const;
 const OLLAMA_MODELS = ['llama3.2', 'gemma4:26b', 'qwen2.5'] as const;
 
-type Provider = 'ollama' | 'openclaw' | 'glm';
+type Provider = 'ollama' | 'openclaw' | 'glm' | 'kimi';
 
 type Preset = {
   readonly id: string;
@@ -306,6 +306,10 @@ export function SettingsDropdown() {
                 className={settings.provider === 'glm' ? 'active' : ''}
                 onClick={() => patchSettings({ provider: 'glm', model: 'glm-5.1' })}
               >Z.AI GLM</button>
+              <button
+                className={settings.provider === 'kimi' ? 'active' : ''}
+                onClick={() => patchSettings({ provider: 'kimi', model: 'kimi-k2.6' })}
+              >Kimi K2.6</button>
               <button
                 className={settings.provider === 'openclaw' ? 'active' : ''}
                 onClick={() => patchSettings({ provider: 'openclaw' })}

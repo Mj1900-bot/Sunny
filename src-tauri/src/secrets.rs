@@ -62,6 +62,7 @@ use ts_rs::TS;
 pub enum SecretKind {
     Anthropic,
     Zai,
+    Moonshot,
     OpenAi,
     OpenRouter,
     ElevenLabs,
@@ -76,6 +77,7 @@ impl SecretKind {
         match s {
             "anthropic"   => Some(Self::Anthropic),
             "zai"         => Some(Self::Zai),
+            "moonshot"    => Some(Self::Moonshot),
             "openai"      => Some(Self::OpenAi),
             "openrouter"  => Some(Self::OpenRouter),
             "elevenlabs"  => Some(Self::ElevenLabs),
@@ -91,6 +93,7 @@ impl SecretKind {
         match self {
             Self::Anthropic  => "sunny-anthropic-api-key",
             Self::Zai        => "sunny-zai-api-key",
+            Self::Moonshot   => "sunny-moonshot-api-key",
             Self::OpenAi     => "sunny-openai-api-key",
             Self::OpenRouter => "sunny-openrouter-api-key",
             Self::ElevenLabs => "sunny-elevenlabs-api-key",
@@ -106,6 +109,7 @@ impl SecretKind {
         match self {
             Self::Anthropic  => &["ANTHROPIC_API_KEY"],
             Self::Zai        => &["ZAI_API_KEY", "ZHIPU_API_KEY", "GLM_API_KEY"],
+            Self::Moonshot   => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
             Self::OpenAi     => &["OPENAI_API_KEY"],
             Self::OpenRouter => &["OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY"],
             Self::ElevenLabs => &["ELEVENLABS_API_KEY", "XI_API_KEY"],
@@ -129,6 +133,8 @@ impl SecretKind {
             Self::OpenAi     => v.starts_with("sk-"),
             // OpenRouter keys start with `sk-or-`.
             Self::OpenRouter => v.starts_with("sk-or-") || v.starts_with("sk-"),
+            // Moonshot (Kimi) keys typically start with "sk-" like OpenAI.
+            Self::Moonshot   => v.starts_with("sk-"),
             // Z.AI / GLM / ElevenLabs / Wavespeed don't publish a
             // stable prefix, so we just trust the length + non-control
             // check above.
@@ -144,6 +150,7 @@ impl SecretKind {
 pub struct SecretsStatus {
     pub anthropic:   bool,
     pub zai:         bool,
+    pub moonshot:    bool,
     pub openai:      bool,
     pub openrouter:  bool,
     pub elevenlabs:  bool,
@@ -197,6 +204,7 @@ pub struct ImportOutcome {
 
 pub async fn anthropic_api_key()   -> Option<String> { resolve(SecretKind::Anthropic).await }
 pub async fn zai_api_key()         -> Option<String> { resolve(SecretKind::Zai).await }
+pub async fn moonshot_api_key()    -> Option<String> { resolve(SecretKind::Moonshot).await }
 pub async fn openai_api_key()      -> Option<String> { resolve(SecretKind::OpenAi).await }
 pub async fn openrouter_api_key()  -> Option<String> { resolve(SecretKind::OpenRouter).await }
 pub async fn elevenlabs_api_key()  -> Option<String> { resolve(SecretKind::ElevenLabs).await }
@@ -243,9 +251,10 @@ fn emit_secret_read(provider: &str, caller: &str) {
 /// Probe every known provider — used by the Settings MODELS tab to light
 /// up the "REACHABLE / MISSING" pills. No key material leaves Rust.
 pub async fn status_all() -> SecretsStatus {
-    let (anthropic, zai, openai, openrouter, elevenlabs, wavespeed) = tokio::join!(
+    let (anthropic, zai, moonshot, openai, openrouter, elevenlabs, wavespeed) = tokio::join!(
         anthropic_api_key(),
         zai_api_key(),
+        moonshot_api_key(),
         openai_api_key(),
         openrouter_api_key(),
         elevenlabs_api_key(),
@@ -254,6 +263,7 @@ pub async fn status_all() -> SecretsStatus {
     SecretsStatus {
         anthropic:  anthropic.is_some(),
         zai:        zai.is_some(),
+        moonshot:   moonshot.is_some(),
         openai:     openai.is_some(),
         openrouter: openrouter.is_some(),
         elevenlabs: elevenlabs.is_some(),
