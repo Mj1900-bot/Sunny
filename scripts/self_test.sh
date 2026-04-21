@@ -128,14 +128,98 @@ PY
 run_cargo_test() {
   local name="cargo_test"
   section_enabled "$name" || { echo "SKIP  $name"; return; }
-  echo "RUN   $name"
+  echo "RUN   $name (batched + capped + fused)"
   local log="$LOG_DIR/$name.log"
-  local start end exit_code
+  : > "$log"
+  local start end exit_code=0 batch_rc
+
+  # Fuse #1 — pre-flight: if the uid is already near the kernel cap, bail
+  # loudly before we start spawning. Better a clean FAIL than a locked Mac.
+  local proc_used proc_cap proc_free
+  proc_used=$(ps -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+  proc_cap=$(sysctl -n kern.maxprocperuid 2>/dev/null || echo 1418)
+  proc_free=$(( proc_cap - proc_used ))
+  if [[ "$proc_free" -lt 400 ]]; then
+    echo "  FATAL: only $proc_free of $proc_cap uid process slots free (in use: $proc_used)"
+    echo "  close apps or reboot before retrying $name"
+    python3 - "$name" "$log" "$proc_used" "$proc_cap" <<'PY'
+import json, sys
+name, log, used, cap = sys.argv[1:]
+open(f"/tmp/sunny_selftest/{name}.json","w").write(json.dumps({
+    "name": name, "exit": 99, "skipped": True,
+    "reason": f"insufficient headroom (cap={cap}, used={used})",
+    "passed": 0, "failed": 0, "ignored": 0,
+    "elapsed_sec": 0, "log": log,
+}, indent=2))
+PY
+    return
+  fi
+
+  # Fuse #2 — belt: cap THIS script's subtree below the uid ceiling.
+  # If batching math is wrong, the script dies with EAGAIN, not the Mac.
+  ulimit -u 1024 2>/dev/null || true
+
   start=$(date +%s)
-  ( cd "$REPO_ROOT/src-tauri" && run_with_timeout 1200 cargo test --lib --release ) \
-    > "$log" 2>&1
-  exit_code=$?
+
+  # One batch per top-level src-tauri/src/ directory. Between batches the
+  # OS reaps zombies left over from Command::spawn without .wait(), so
+  # the steady-state count stays bounded regardless of suite size.
+  local BATCHES=(
+    "agent_loop"
+    "ambient"
+    "autopilot"
+    "browser"
+    "commands"
+    "memory"
+    "pages"
+    "scan"
+    "security"
+    "tools_compute"
+    "voice"
+    "world"
+  )
+
+  # Caps applied to every cargo invocation below:
+  #   CARGO_BUILD_JOBS=2   — caps rustc/link worker count during build
+  #   --test-threads=2     — caps concurrent test execution inside one run
+  # With both in force, peak concurrent subprocesses stay well under the
+  # 1024 ulimit even if individual tests spawn a few helpers each.
+
+  for batch in "${BATCHES[@]}"; do
+    echo "  [batch] $batch::"
+    (
+      cd "$REPO_ROOT/src-tauri" || exit 1
+      export CARGO_BUILD_JOBS=2
+      run_with_timeout 300 cargo test --lib --release --no-fail-fast \
+        "${batch}::" -- --test-threads=2
+    ) >> "$log" 2>&1
+    batch_rc=$?
+    [[ $batch_rc -ne 0 ]] && exit_code=$batch_rc
+    # Reap window — zombies from this batch clear before the next starts.
+    sleep 2
+  done
+
+  # Catch-all for tests in top-level .rs files (anything not inside the
+  # batched directories). libtest --skip is repeatable and matches by
+  # substring, so skipping each batched prefix leaves only the leftovers.
+  local skip_args=()
+  for batch in "${BATCHES[@]}"; do
+    skip_args+=(--skip "${batch}::")
+  done
+  echo "  [batch] top-level (catch-all)"
+  (
+    cd "$REPO_ROOT/src-tauri" || exit 1
+    export CARGO_BUILD_JOBS=2
+    run_with_timeout 300 cargo test --lib --release --no-fail-fast \
+      -- --test-threads=2 "${skip_args[@]}"
+  ) >> "$log" 2>&1
+  batch_rc=$?
+  [[ $batch_rc -ne 0 ]] && exit_code=$batch_rc
+
   end=$(date +%s)
+
+  # The parser sums every `test result: …` line in the aggregated log,
+  # so per-batch totals add up to the full-suite figure automatically.
   python3 - "$name" "$exit_code" "$((end-start))" "$log" <<'PY'
 import json, re, sys
 name, exit_code, elapsed, log = sys.argv[1:]
