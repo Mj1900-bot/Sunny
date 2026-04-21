@@ -438,20 +438,28 @@ pub async fn dispatch_tool(
         (true, false) => Severity::Info,
     };
 
-    let bus_payload = json!({
-        "kind": "tool_call",
-        "ok": output.ok,
-        "duration_ms": elapsed_ms,
-        "output_bytes": output.display.len(),
-        "id": event_id,
-    });
+    // Human-readable step text for the agent UI (orb footer / PlanPanel /
+    // AGENTS LIVE). The frontend's useAgentStepBridge splits this on the
+    // Unicode arrow → so the `splitToolResult` parser can pull the tool
+    // name + preview apart. Previously this emitted the raw JSON metadata
+    // (`{"duration_ms":1643,"id":"…"}`) as the step text and the tool
+    // NAME in the `tool` field — but the frontend uses `tool` as a kind
+    // discriminator ("thinking" | "tool_call" | "tool_result" | "answer"),
+    // so a real tool name like "weather_current" fell into the unknown-
+    // kind path and rendered the JSON verbatim to the user.
+    let preview = if output.ok {
+        crate::agent_loop::helpers::truncate(&output.display, 200)
+    } else {
+        format!("error: {}", crate::agent_loop::helpers::truncate(&output.display, 200))
+    };
+    let human_text = format!("{name} \u{2192} {preview}");
     publish_bus(SunnyEvent::AgentStep {
         seq: 0,
         boot_epoch: 0,
         turn_id: event_id.clone(),
         iteration: 0,
-        text: bus_payload.to_string(),
-        tool: Some(name.clone()),
+        text: human_text,
+        tool: Some(if output.ok { "tool_result".to_string() } else { "error".to_string() }),
         at: chrono::Utc::now().timestamp_millis(),
     });
 
