@@ -13,15 +13,23 @@ concurrency:
 
 jobs:
   self-test:
-    runs-on: ubuntu-24.04
+    name: self-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    strategy:
+      # Don't cancel the other OS when one fails -- mac and linux failures are
+      # often platform-specific, and seeing both is more useful than one.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Tauri + audio + enigo system dependencies
+      - name: Install Tauri + audio + enigo system dependencies (Linux only)
         # Tauri 2.x -> webkit2gtk-4.1 + libsoup-3; alsa for cpal; libxdo for enigo (X11 input sim); build-essential for bundled rusqlite.
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -41,6 +49,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Per-OS cache keys — rust-cache reads `runner.os` automatically.
           cache-on-failure: true
 
       - name: Install pnpm
@@ -73,7 +82,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: self-test-report
+          # Per-OS artifact name so the Linux + macOS runs don't clobber each other.
+          name: self-test-report-${{ matrix.os }}
           path: |
             /tmp/sunny_selftest/report.json
             /tmp/sunny_selftest/logs/
