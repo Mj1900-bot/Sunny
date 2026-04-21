@@ -142,27 +142,31 @@ pub async fn send(req: RequestBuilder) -> Result<Response, reqwest::Error> {
     let initiator = current_initiator();
     let event_id = Uuid::new_v4().to_string();
 
-    // Canary tripwire — if the outbound URL or query string contains
-    // our honeypot token, this is a confirmed exfil attempt.  Fire
-    // the tripwire BEFORE we check panic_mode so even a transient
-    // leak before panic engaged is recorded.
-    if security::canary::contains_canary(&url_str) {
-        security::canary::trip(&host, &url_str);
-        // Fall through — we still short-circuit below on the panic
-        // flag that trip() just set.
-    }
-
-    // When the body is in-memory and the builder is cloneable, scan
-    // POST/PUT/PATCH payloads for the honeypot token (URL-only checks
-    // miss JSON bodies and form fields).
-    if let Some(b) = req.try_clone() {
-        if let Ok(request) = b.build() {
-            if let Some(body) = request.body() {
-                if let Some(bytes) = body.as_bytes() {
-                    if !bytes.is_empty() {
-                        let hay = String::from_utf8_lossy(bytes);
-                        if security::canary::contains_canary(&hay) {
-                            security::canary::trip(&host, "request body contains canary");
+    // Canary tripwire — if an AGENT-initiated outbound request carries
+    // our honeypot token, this is a confirmed exfil attempt. Only scan
+    // agent-initiated traffic: Sunny's own provider calls (ollama, z.ai,
+    // anthropic, …) legitimately include the canary in the system prompt
+    // body because `prompts::compose_system_prompt` appends the sentinel
+    // line. Scanning every outbound request would self-trip on our own
+    // trusted LLM calls — which is exactly what was happening before this
+    // guard: every chat → canary in request body → trip → panic engage
+    // → ollama blocked → next retry same cycle. The `is_agent_initiator`
+    // predicate is the same gate `egress_verdict` uses below for the
+    // allowlist, keeping "what counts as untrusted traffic" consistent
+    // across both enforcement layers.
+    if security::enforcement::is_agent_initiator(&initiator) {
+        if security::canary::contains_canary(&url_str) {
+            security::canary::trip(&host, &url_str);
+        }
+        if let Some(b) = req.try_clone() {
+            if let Ok(request) = b.build() {
+                if let Some(body) = request.body() {
+                    if let Some(bytes) = body.as_bytes() {
+                        if !bytes.is_empty() {
+                            let hay = String::from_utf8_lossy(bytes);
+                            if security::canary::contains_canary(&hay) {
+                                security::canary::trip(&host, "request body contains canary");
+                            }
                         }
                     }
                 }
