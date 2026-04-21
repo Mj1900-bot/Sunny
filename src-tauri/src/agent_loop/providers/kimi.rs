@@ -69,6 +69,14 @@ pub struct KimiChoice {
 pub struct KimiMessage {
     #[serde(default)]
     pub content: Option<String>,
+    /// Kimi K2.6 is a reasoning model. For hard questions it writes
+    /// chain-of-thought into `reasoning_content` and the final concise
+    /// answer into `content`. When max_tokens is tight, reasoning can
+    /// consume the whole budget and `content` lands empty — in that
+    /// case fall back to `reasoning_content` so the user at least sees
+    /// the model's work. Same pattern as GLM-5.1 thinking mode.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<KimiToolCall>>,
 }
@@ -126,13 +134,22 @@ pub async fn kimi_turn(model: &str, system: &str, history: &[Value]) -> Result<T
         })
         .collect();
 
+    // K2.6 quirks (as of 2026-04-20 launch):
+    //   * temperature is locked to 1.0 — Moonshot rejects any other
+    //     value with HTTP 400 "invalid temperature: only 1 is allowed
+    //     for this model". This is model-specific; other Moonshot
+    //     models accept the usual 0-2 range.
+    //   * It's a reasoning model — hard prompts consume 500-1500 tokens
+    //     of chain-of-thought BEFORE producing `content`. 4k is the
+    //     floor; 8k gives the model room to actually finish. User pays
+    //     for reasoning tokens ($2.50/M output) so keep this bounded.
     let body = json!({
         "model": model,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
-        "temperature": 0.7,
-        "max_tokens": 4096,
+        "temperature": 1,
+        "max_tokens": 8192,
         "stream": false,
     });
 
@@ -203,7 +220,16 @@ pub async fn kimi_turn(model: &str, system: &str, history: &[Value]) -> Result<T
         .and_then(|c| c.message)
         .unwrap_or_default();
 
-    let content_text = msg.content.unwrap_or_default();
+    // Prefer final `content`; fall back to `reasoning_content` so a
+    // reasoning-exhausted turn still surfaces something the user can
+    // read (see comment on KimiMessage.reasoning_content).
+    let reasoning_text = msg.reasoning_content.unwrap_or_default();
+    let raw_content = msg.content.unwrap_or_default();
+    let content_text = if !raw_content.trim().is_empty() {
+        raw_content
+    } else {
+        reasoning_text
+    };
 
     if let Some(tool_calls) = msg.tool_calls.filter(|v| !v.is_empty()) {
         let mut calls: Vec<ToolCall> = Vec::with_capacity(tool_calls.len());

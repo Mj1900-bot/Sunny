@@ -792,10 +792,12 @@ async fn kimi_oneshot(
     msgs.push(serde_json::json!({ "role": "system", "content": system }));
     msgs.extend(sanitize_messages(messages));
 
+    // K2.6 locks temperature to 1.0; any other value → HTTP 400. See
+    // agent_loop/providers/kimi.rs for the full quirk list.
     let body = serde_json::json!({
         "model": model,
         "messages": msgs,
-        "temperature": 0.7,
+        "temperature": 1,
         "max_tokens": max_tokens,
         "stream": false,
     });
@@ -825,14 +827,27 @@ async fn kimi_oneshot(
         .json()
         .await
         .map_err(|e| format!("kimi decode: {e}"))?;
-    let content = parsed
+    let msg = parsed
         .get("choices")
         .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
+        .and_then(|c| c.get("message"));
+    let content = msg
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
         .unwrap_or("");
-    Ok(content.to_string())
+    if !content.trim().is_empty() {
+        return Ok(content.to_string());
+    }
+    // Reasoning-mode fallback: K2.6 writes chain-of-thought into
+    // reasoning_content and only lands the final answer in content
+    // once it's done thinking. On tight max_tokens budgets the model
+    // sometimes runs out mid-reasoning; surface that rather than an
+    // empty string.
+    let reasoning = msg
+        .and_then(|m| m.get("reasoning_content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    Ok(reasoning.to_string())
 }
 
 #[cfg(test)]
