@@ -51,7 +51,8 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "signingIdentity": "Apple Development: 8844422@gmail.com (4J59FQTPUV)"
+      "signingIdentity": "Apple Development: 8844422@gmail.com (4J59FQTPUV)",
+      "entitlements": "entitlements.plist"
     },
     "iOS": {},
     "android": {},

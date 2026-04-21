@@ -69,6 +69,15 @@ if [ "$IDENTITY" != "-" ]; then
   CODESIGN_FLAGS+=(--timestamp)
 fi
 
+# Preserve the entitlements Tauri applied during the initial sign. Without
+# --entitlements, codesign's re-sign strips them — and hardened-runtime +
+# no entitlements means macOS blocks mic/camera/apple-events *before* the
+# TCC prompt fires, so the user never even sees a permission dialog.
+ENTITLEMENTS="/Users/sunny/Sunny Ai/src-tauri/entitlements.plist"
+if [ -f "$ENTITLEMENTS" ]; then
+  CODESIGN_FLAGS+=(--entitlements "$ENTITLEMENTS")
+fi
+
 echo "patch-info-plist: re-signing with identity: $IDENTITY (flags: ${CODESIGN_FLAGS[*]})"
 /usr/bin/codesign "${CODESIGN_FLAGS[@]}" "$APP" 2>&1 | sed 's/^/  /'
 if ! /usr/bin/codesign --verify --deep --strict "$APP" 2>/dev/null; then
