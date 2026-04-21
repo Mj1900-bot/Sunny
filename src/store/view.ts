@@ -11,10 +11,15 @@ export type ViewKey =
 
 export type SettingsSnapshot = Settings;
 
+/** Providers Sunny can talk to. Must stay in sync with the Rust
+ *  `match provider` arm in src-tauri/src/ai.rs — each string here has a
+ *  corresponding backend route. */
+export type ProviderId = 'ollama' | 'openclaw' | 'glm';
+
 export type ModelPreset = {
   readonly id: string;
   readonly label: string;
-  readonly provider: 'ollama' | 'openclaw';
+  readonly provider: ProviderId;
   readonly model: string;
 };
 
@@ -27,7 +32,7 @@ type Settings = {
   voiceEnabled: boolean;
   voiceName: string;
   voiceRate: number;
-  provider: 'ollama' | 'openclaw';
+  provider: ProviderId;
   model: string;
   orbIntensity: number;
   gridOpacity: number;

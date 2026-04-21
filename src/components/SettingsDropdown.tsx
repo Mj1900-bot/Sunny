@@ -11,7 +11,7 @@ const SANDBOXES = ['main', 'alfred', 'stephanie', 'test-agent'] as const;
 const OPENCLAW_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const;
 const OLLAMA_MODELS = ['llama3.2', 'gemma4:26b', 'qwen2.5'] as const;
 
-type Provider = 'ollama' | 'openclaw';
+type Provider = 'ollama' | 'openclaw' | 'glm';
 
 type Preset = {
   readonly id: string;
