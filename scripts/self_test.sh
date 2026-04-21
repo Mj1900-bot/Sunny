@@ -166,10 +166,21 @@ PY
 
   start=$(date +%s)
 
-  # One batch per top-level src-tauri/src/ directory. Between batches the
-  # OS reaps zombies left over from Command::spawn without .wait(), so
-  # the steady-state count stays bounded regardless of suite size.
+  # One batch per top-level src-tauri/src/ directory — except agent_loop,
+  # which has 847 tests whose zombie cloud is too large to drain in one
+  # reap window. It gets sub-split into its 9 direct subdirectories so
+  # each sub-batch leaves a smaller trail.
   local BATCHES=(
+    "agent_loop::context_window"
+    "agent_loop::critic"
+    "agent_loop::dialogue"
+    "agent_loop::dispatch"
+    "agent_loop::model_router"
+    "agent_loop::prompts"
+    "agent_loop::providers"
+    "agent_loop::reflexion"
+    "agent_loop::tools::sandbox"
+    "agent_loop::tools"
     "agent_loop"
     "ambient"
     "autopilot"
@@ -184,6 +195,30 @@ PY
     "world"
   )
 
+  # Waits until the uid process count drops to (initial_baseline + 800)
+  # or max_wait seconds elapse — whichever comes first. Empty ps output
+  # is treated as "table is full, keep waiting" rather than "table is
+  # empty, proceed", which was the bug that produced a fake `free 10666`
+  # on a cap-saturated system.
+  wait_for_reap() {
+    local target=$(( proc_used + 800 ))
+    local max_wait=60
+    local waited=0 now
+    while (( waited < max_wait )); do
+      now=$(ps -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+      if [[ -z "$now" || "$now" == "0" ]]; then
+        now=99999  # ps pipe failed — assume worst
+      fi
+      if (( now <= target )); then
+        return 0
+      fi
+      sleep 3
+      waited=$(( waited + 3 ))
+    done
+    echo "  WARN: $now procs after ${max_wait}s reap wait (target $target) — proceeding anyway"
+    return 1
+  }
+
   # Caps applied to every cargo invocation below:
   #   CARGO_BUILD_JOBS=2   — caps rustc/link worker count during build
   #   --test-threads=2     — caps concurrent test execution inside one run
@@ -191,9 +226,15 @@ PY
   # 1024 ulimit even if individual tests spawn a few helpers each.
 
   for batch in "${BATCHES[@]}"; do
-    # Mid-run budget check — bail if the system filled up since start.
+    # Mid-run budget check — bail if the table is genuinely full. Treat
+    # empty ps output as full (it can't fork, so we can't either).
     local now_used now_free
     now_used=$(ps -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ -z "$now_used" || "$now_used" == "0" ]]; then
+      echo "  ABORT: ps pipe failed (table at or near cap) — stopping cleanly"
+      exit_code=99
+      break
+    fi
     now_free=$(( proc_cap - now_used ))
     if [[ "$now_free" -lt 200 ]]; then
       echo "  ABORT: only $now_free slots free before $batch:: batch — stopping cleanly"
@@ -201,7 +242,7 @@ PY
       break
     fi
 
-    echo "  [batch] $batch:: (free $now_free)"
+    echo "  [batch] $batch:: (used $now_used, free $now_free)"
     (
       cd "$REPO_ROOT/src-tauri" || exit 1
       export CARGO_BUILD_JOBS=2
@@ -211,8 +252,11 @@ PY
     # PIPESTATUS[0] — cargo's exit, not tee's.
     batch_rc=${PIPESTATUS[0]}
     [[ $batch_rc -ne 0 ]] && exit_code=$batch_rc
-    # Reap window — zombies from this batch clear before the next starts.
-    sleep 5
+
+    # Active reap — poll until the process count drops back near baseline
+    # before starting the next batch. Handles the case where tests leave
+    # a zombie cloud that needs launchd several seconds to drain.
+    wait_for_reap
   done
 
   # Catch-all for tests in top-level .rs files (anything not inside the
