@@ -49,19 +49,23 @@ const SPECULATIVE_MATCH_PREFIX: usize = 50;
 /// Thinking path remains available — callers can set `model` explicitly
 /// in `~/.sunny/settings.json` or pick it per sub-agent via the model
 /// override argument to `spawn_subagent`.
-/// Default local model. Measured end-to-end latency on an M3 Ultra:
-///   * qwen2.5:3b        —  0.79 s total    (TTFT 0.63 s)
-///   * qwen3.5:9b-nothink —  4.12 s total   (TTFT 0.24 s)
-///   * qwen3.5:9b-fast    —  6.23 s total   (TTFT 2.22 s)
-///   * qwen3:30b-a3b      — 30-60 s total + echo problems on simple prompts
-/// qwen2.5:3b wins the sub-second bar for casual chat AND doesn't echo
-/// user input back. Users who want the 30B's stronger reasoning can
-/// pick it explicitly via Settings → Models; this constant is purely
-/// the default when nothing else is specified.
-pub const PREFERRED_OLLAMA_MODEL: &str = "qwen2.5:3b";
+/// Default local model. Measured latency vs. quality trade-off on an
+/// M3 Ultra, April 2026:
+///   * qwen2.5:3b         —  0.79 s + FAILS on multi-step reasoning
+///                           (e.g. gets scheduling logic wrong)
+///   * qwen3.5:9b-nothink —  4.12 s + sometimes returns empty
+///   * qwen3.5:9b-fast    —  6.23 s (misnomer, not fast)
+///   * qwen3:30b-a3b      — 10-60 s + high quality but echo-prone
+///                           on very short casual prompts
+/// Keeping qwen3:30b-a3b as the default — it's the only local option
+/// that gives Sunny-grade answers on planning / memory / multi-step
+/// queries. The echo-on-greetings issue is cosmetic; cloud (Kimi K2.6
+/// or GLM-5.1) is the right answer when latency matters more than
+/// running fully offline.
+pub const PREFERRED_OLLAMA_MODEL: &str = "qwen3:30b-a3b-instruct-2507-q4_K_M";
 /// Legacy alias kept for backward compatibility with call sites outside
 /// this module. Points at the same model as `PREFERRED_OLLAMA_MODEL`.
-pub const DEFAULT_OLLAMA_MODEL: &str = "qwen2.5:3b";
+pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3:30b-a3b-instruct-2507-q4_K_M";
 
 // Ollama runs fully locally — there is no per-token billing. The
 // cost constant (crate::telemetry::cost_rates::OLLAMA_COST) is 0.0.
