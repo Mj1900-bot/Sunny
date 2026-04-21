@@ -94,7 +94,10 @@ inventory::submit! {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+// Tests spawn `/usr/bin/sandbox-exec`, which only exists on macOS (Apple
+// Seatbelt). On Linux they'd all panic with ENOENT; skipping the module is
+// semantically correct since there's no Linux implementation to validate.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
