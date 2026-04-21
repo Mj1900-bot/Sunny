@@ -90,6 +90,11 @@ pub fn build_recency_query(hours: u64, kind: Option<&str>) -> String {
 
 /// Run `mdfind` with the given predicate. Returns at most `limit` entries.
 pub async fn run_mdfind(predicate: &str, limit: usize) -> Result<Vec<SpotlightEntry>, String> {
+    // Budget-gate: agents can issue rapid-fire searches while narrowing
+    // on files — acquire a permit so each search still runs but the
+    // kernel fork budget stays protected.
+    let _guard = crate::process_budget::SpawnGuard::acquire().await?;
+
     let output = Command::new("mdfind")
         .arg(predicate)
         .output()

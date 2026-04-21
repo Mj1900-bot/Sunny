@@ -292,6 +292,12 @@ const XATTR_KEY: &str = "com.apple.metadata:_kMDItemUserTags";
 /// Read the current Finder tags on a file. Returns an empty list if the
 /// attribute is absent. Path must already be resolved (use `path_guard::resolve`).
 pub async fn get_tags(resolved_path: &str) -> Result<Vec<String>, String> {
+    // Acquire a spawn-budget permit before forking xattr. Agents often
+    // loop through many files tagging / reading tags, and without a
+    // budget each call forks unbounded — the exact fork-bomb failure
+    // mode the setrlimit + semaphore infrastructure exists to prevent.
+    let _guard = crate::process_budget::SpawnGuard::acquire().await?;
+
     let output = Command::new("xattr")
         .args(["-px", XATTR_KEY, resolved_path])
         .output()
@@ -312,6 +318,10 @@ pub async fn set_tags(resolved_path: &str, tags: &[String]) -> Result<(), String
     let plist_bytes = build_bplist(tags);
     // xattr -wx expects the value as a hex string
     let hex_val = hex::encode(&plist_bytes);
+
+    // Budget-gate for the same reason get_tags above does — multi-file
+    // tag-writes are the common agent pattern.
+    let _guard = crate::process_budget::SpawnGuard::acquire().await?;
 
     let status = Command::new("xattr")
         .args(["-wx", XATTR_KEY, &hex_val, resolved_path])

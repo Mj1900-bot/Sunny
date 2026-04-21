@@ -48,6 +48,12 @@ const SC_TIMEOUT: Duration = Duration::from_secs(60);
 // ---------------------------------------------------------------------------
 
 pub(super) async fn run_osa(script: &str) -> Result<String, String> {
+    // osascript is a frequent agent tool — shortcut invocations,
+    // calendar queries, message lookups can all fire in quick
+    // succession. Gate on the global spawn budget so a loop of tool
+    // calls can't saturate the kernel fork table.
+    let _guard = crate::process_budget::SpawnGuard::acquire().await?;
+
     let mut child = Command::new("osascript")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -199,6 +205,11 @@ pub async fn shortcut_run(name: &str, input: Option<&str>) -> Result<String, Str
             names.join(", ")
         ));
     }
+
+    // Budget-gate the shortcut spawn. The agent can be prompted to
+    // "run these N shortcuts in sequence" — without a permit check
+    // that's N concurrent spawns on an already-busy kernel.
+    let _guard = crate::process_budget::SpawnGuard::acquire().await?;
 
     let mut cmd = Command::new("shortcuts");
     cmd.arg("run").arg(n);
