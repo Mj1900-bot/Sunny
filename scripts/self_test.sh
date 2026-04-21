@@ -156,17 +156,13 @@ PY
   fi
 
   # Fuse #2 — belt: cap THIS script's subtree below the uid ceiling.
-  # Dynamic: give the compile subtree ~400 slots above current baseline,
-  # but never exceed (cap - 200) so GUI + system daemons keep breathing.
-  # If batching math is wrong, the script dies with EAGAIN, not the Mac.
-  local ulimit_target max_allowed
-  ulimit_target=$(( proc_used + 400 ))
-  max_allowed=$(( proc_cap - 200 ))
-  if (( ulimit_target > max_allowed )); then
-    ulimit_target=$max_allowed
-  fi
+  # Set to (cap - 300) so we use nearly the full kernel budget but still
+  # blow up 300 slots before the kernel would — protecting GUI daemons
+  # from the same EAGAIN. Previous baseline+400 formula took a snapshot
+  # at script start and ran out as test subprocesses pushed the total up.
+  local ulimit_target=$(( proc_cap - 300 ))
   ulimit -u "$ulimit_target" 2>/dev/null || true
-  echo "  fuse: ulimit -u $ulimit_target (baseline $proc_used, cap $proc_cap)"
+  echo "  fuse: ulimit -u $ulimit_target (baseline $proc_used, cap $proc_cap, free $proc_free)"
 
   start=$(date +%s)
 
@@ -195,7 +191,17 @@ PY
   # 1024 ulimit even if individual tests spawn a few helpers each.
 
   for batch in "${BATCHES[@]}"; do
-    echo "  [batch] $batch::"
+    # Mid-run budget check — bail if the system filled up since start.
+    local now_used now_free
+    now_used=$(ps -u "$USER" 2>/dev/null | wc -l | tr -d ' ')
+    now_free=$(( proc_cap - now_used ))
+    if [[ "$now_free" -lt 200 ]]; then
+      echo "  ABORT: only $now_free slots free before $batch:: batch — stopping cleanly"
+      exit_code=99
+      break
+    fi
+
+    echo "  [batch] $batch:: (free $now_free)"
     (
       cd "$REPO_ROOT/src-tauri" || exit 1
       export CARGO_BUILD_JOBS=2
@@ -206,7 +212,7 @@ PY
     batch_rc=${PIPESTATUS[0]}
     [[ $batch_rc -ne 0 ]] && exit_code=$batch_rc
     # Reap window — zombies from this batch clear before the next starts.
-    sleep 2
+    sleep 5
   done
 
   # Catch-all for tests in top-level .rs files (anything not inside the
