@@ -63,9 +63,19 @@ export function useChatMessages(opts: SendOptions) {
     return () => { unsubPromise.then(fn => fn && fn()); };
   }, []);
 
-  // Subscribe to chat done — finalize + speak
+  // Subscribe to chat done — finalize + speak.
+  // If handleSend's invoke-return already finalized this turn (flips
+  // spokeForTurnRef to true), bail out entirely — otherwise we'd
+  // re-append a duplicate Sunny message AND speak again.
   useEffect(() => {
     const unsubPromise = onChatDone(full => {
+      if (spokeForTurnRef.current) {
+        // Invoke-return path already wrote the final message and
+        // fired speak(). Clean up streamingIdRef and exit.
+        streamingIdRef.current = null;
+        setSending(false);
+        return;
+      }
       const activeId = streamingIdRef.current;
       streamingIdRef.current = null;
       setMessages(prev => {
@@ -82,7 +92,7 @@ export function useChatMessages(opts: SendOptions) {
         return prev;
       });
       const finalText = full && full.length > 0 ? full : '';
-      if (finalText.length > 0 && !spokeForTurnRef.current) {
+      if (finalText.length > 0) {
         spokeForTurnRef.current = true;
         speak(finalText).catch(err => console.error('ChatPanel: speak failed', err));
       }
