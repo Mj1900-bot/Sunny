@@ -30,6 +30,11 @@ export function useChatMessages(opts: SendOptions) {
   const [messages, setMessages] = useState<Message[]>(() => loadHistory());
   const [sending, setSending] = useState(false);
   const streamingIdRef = useRef<string | null>(null);
+  // Dupe-TTS guard. onChatDone (event) and handleSend's invoke-return
+  // (belt-and-braces) both want to speak the final text. Whichever
+  // path fires first flips this; the loser checks and skips. Reset
+  // at the start of each handleSend call so the next turn is armed.
+  const spokeForTurnRef = useRef(false);
 
   // Persist to localStorage on change
   useEffect(() => {
@@ -77,7 +82,8 @@ export function useChatMessages(opts: SendOptions) {
         return prev;
       });
       const finalText = full && full.length > 0 ? full : '';
-      if (finalText.length > 0) {
+      if (finalText.length > 0 && !spokeForTurnRef.current) {
+        spokeForTurnRef.current = true;
         speak(finalText).catch(err => console.error('ChatPanel: speak failed', err));
       }
       setSending(false);
@@ -90,6 +96,9 @@ export function useChatMessages(opts: SendOptions) {
       const text = raw.trim();
       if (!text || sending) return;
       setSending(true);
+      // Arm the dupe-TTS guard for this turn — one of onChatDone or
+      // the invoke-return speak() call will flip it to true.
+      spokeForTurnRef.current = false;
       const userMsg: Message = { id: makeId(), role: 'user', text, ts: Date.now() };
       const sunnyId = makeId();
       streamingIdRef.current = sunnyId;
@@ -130,7 +139,8 @@ export function useChatMessages(opts: SendOptions) {
             return { ...m, text: finalText, streaming: false };
           }),
         );
-        if (hasReply && !doneAlreadyFired) {
+        if (hasReply && !doneAlreadyFired && !spokeForTurnRef.current) {
+          spokeForTurnRef.current = true;
           speak(reply as string).catch(err => console.error('ChatPanel: speak failed', err));
         }
         setSending(false);
