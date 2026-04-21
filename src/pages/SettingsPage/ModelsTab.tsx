@@ -313,7 +313,7 @@ export function ModelsTab(): JSX.Element {
     const id = `user-${Date.now().toString(36)}`;
     const next: ModelPreset = {
       id,
-      label: `${settings.provider === 'openclaw' ? 'OpenClaw' : 'Ollama'} → ${settings.model}`,
+      label: `${settings.provider === 'openclaw' ? 'OpenClaw' : settings.provider === 'glm' ? 'Z.AI' : 'Ollama'} → ${settings.model}`,
       provider: settings.provider,
       model: settings.model,
     };
@@ -366,9 +366,17 @@ export function ModelsTab(): JSX.Element {
           >
             Ollama (local)
           </button>
+          <button
+            style={chipStyle(settings.provider === 'glm')}
+            onClick={() => patchSettings({ provider: 'glm', model: 'glm-5.1' })}
+          >
+            Z.AI GLM
+          </button>
           <span style={{ ...hintStyle, marginTop: 0, marginLeft: 8 }}>
             {settings.provider === 'openclaw'
               ? 'Talks to the OpenClaw bridge socket.'
+              : settings.provider === 'glm'
+              ? 'Streams from Z.AI\'s GLM-5.1 (Coding Plan). Needs ZAI_API_KEY.'
               : 'Streams from a local Ollama daemon — works fully offline.'}
           </span>
         </div>
