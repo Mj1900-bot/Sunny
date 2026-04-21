@@ -52,6 +52,10 @@ export function useChatMessages(opts: SendOptions) {
             m.id === activeId ? { ...m, text: m.text + (delta ?? ''), streaming: !done } : m,
           );
         }
+        // New turn starting (could be text OR voice-driven — voice turns
+        // don't go through handleSend, so reset the dedup flag here too,
+        // otherwise onChatDone bails permanently after the first turn).
+        spokeForTurnRef.current = false;
         const id = makeId();
         streamingIdRef.current = id;
         return [
