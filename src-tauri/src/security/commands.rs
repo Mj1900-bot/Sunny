@@ -71,6 +71,15 @@ pub async fn security_panic_reset(by: Option<String>) -> PanicReport {
     release(by.unwrap_or_else(|| "user".to_string()))
 }
 
+/// Live snapshot of the fork-bomb spawn budget. Diagnostic only — the
+/// actual rate-limiting happens transparently inside tool dispatch via
+/// `SpawnGuard::acquire`. The Security panel polls this to surface a
+/// 'N of M spawn permits in use' read-out so saturation is visible.
+#[tauri::command]
+pub async fn security_spawn_budget() -> crate::process_budget::SpawnBudgetSnapshot {
+    crate::process_budget::spawn_budget_snapshot()
+}
+
 /// Current LaunchAgents/Daemons baseline.  Used by the Intrusion tab
 /// to render the "last captured" timestamp.
 #[tauri::command]

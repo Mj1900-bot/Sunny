@@ -211,6 +211,7 @@ pub fn run() {
             security::commands::security_panic,
             security::commands::security_panic_reset,
             security::commands::security_panic_mode,
+            security::commands::security_spawn_budget,
             security::commands::security_launch_baseline,
             security::commands::security_launch_diff,
             security::commands::security_launch_reset_baseline,

@@ -169,13 +169,23 @@ pub fn spawn_budget_snapshot() -> SpawnBudgetSnapshot {
 
 /// Pure data struct — no Tauri dependency so this module stays friendly
 /// to unit tests that don't boot a Tauri runtime.
-#[derive(Debug, Clone, Copy)]
+///
+/// Serialisable so the Security panel's System tab can render it as a
+/// live metric ('N of M spawn permits in use, budget OK'). Saturation
+/// means an agent loop has flooded the spawn semaphore and is being
+/// rate-limited by the fork-bomb guard — useful signal for tuning
+/// SPAWN_PERMITS.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SpawnBudgetSnapshot {
+    #[ts(type = "number")]
     pub total: usize,
+    #[ts(type = "number")]
     pub available: usize,
 }
 
 impl SpawnBudgetSnapshot {
+    #[allow(dead_code)]
     pub fn in_use(&self) -> usize {
         self.total.saturating_sub(self.available)
     }

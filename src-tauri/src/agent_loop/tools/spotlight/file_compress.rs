@@ -63,6 +63,10 @@ fn invoke<'a>(_ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
 
         let output_str = output.to_string_lossy().to_string();
 
+        // Budget-gate: archive ops can be chained by agents cleaning up
+        // directories in a loop.
+        let _guard = crate::process_budget::SpawnGuard::acquire().await?;
+
         let mut cmd = tokio::process::Command::new("zip");
         cmd.arg("-r").arg(&output_str);
         for p in &resolved_paths {

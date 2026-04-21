@@ -49,6 +49,9 @@ fn invoke<'a>(_ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
         let zip_str = zip_path.to_string_lossy().to_string();
         let out_str = output_dir.to_string_lossy().to_string();
 
+        // Budget-gate: same justification as file_compress.
+        let _guard = crate::process_budget::SpawnGuard::acquire().await?;
+
         let status = tokio::process::Command::new("unzip")
             .args(["-q", &zip_str, "-d", &out_str])
             .status()
