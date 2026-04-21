@@ -142,19 +142,27 @@ pub async fn send(req: RequestBuilder) -> Result<Response, reqwest::Error> {
     let initiator = current_initiator();
     let event_id = Uuid::new_v4().to_string();
 
-    // Canary tripwire — if an AGENT-initiated outbound request carries
-    // our honeypot token, this is a confirmed exfil attempt. Only scan
-    // agent-initiated traffic: Sunny's own provider calls (ollama, z.ai,
-    // anthropic, …) legitimately include the canary in the system prompt
-    // body because `prompts::compose_system_prompt` appends the sentinel
-    // line. Scanning every outbound request would self-trip on our own
-    // trusted LLM calls — which is exactly what was happening before this
-    // guard: every chat → canary in request body → trip → panic engage
-    // → ollama blocked → next retry same cycle. The `is_agent_initiator`
-    // predicate is the same gate `egress_verdict` uses below for the
-    // allowlist, keeping "what counts as untrusted traffic" consistent
-    // across both enforcement layers.
-    if security::enforcement::is_agent_initiator(&initiator) {
+    // Canary tripwire — only scan requests that are BOTH agent-initiated
+    // AND destined for a non-loopback host. Rationale:
+    //   * The agent_loop wraps every turn in `with_initiator("agent:main")`,
+    //     so provider calls to ollama (127.0.0.1:11434) inherit an
+    //     agent initiator even though they are "trusted by construction"
+    //     in the threat model — the LLM endpoint is the legitimate
+    //     target we send the system prompt (containing the canary) to.
+    //   * Loopback is not a meaningful exfil destination; a rogue local
+    //     listener could be caught through the scanner / tool-call
+    //     egress monitors, and skipping canary scans here prevents the
+    //     self-trip loop: chat → request body contains canary (from
+    //     system prompt) → canary::trip → panic::engage → all subsequent
+    //     egress refused → chat errors → next retry same cycle.
+    //   * Remote agent tool calls (curl https://evil.com, browser fetch,
+    //     etc.) are still scanned because they are BOTH agent-initiated
+    //     AND non-loopback — the actual exfil surface.
+    let is_loopback_host = host == "localhost"
+        || host.parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if security::enforcement::is_agent_initiator(&initiator) && !is_loopback_host {
         if security::canary::contains_canary(&url_str) {
             security::canary::trip(&host, &url_str);
         }
