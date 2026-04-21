@@ -192,6 +192,13 @@ pub fn quarantine_signal(path: &Path) -> Option<Signal> {
 /// Native `getxattr(2)` wrapper. Returns `None` when the attribute is
 /// missing, unreadable, or the path can't be represented as a C string
 /// (embedded NULs). Never spawns a subprocess.
+///
+/// macOS only — the `com.apple.quarantine` xattr is a Gatekeeper concept
+/// that has no equivalent on Linux, and the libc signatures differ (macOS
+/// `getxattr` takes 6 args including position + options; Linux takes 4).
+/// Non-macOS builds get a stub that always returns `None`, which lets the
+/// caller `quarantine_signal` compile and degrade gracefully on CI Linux.
+#[cfg(target_os = "macos")]
 fn read_xattr(path: &Path, name: &str) -> Option<String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -258,6 +265,11 @@ fn read_xattr(path: &Path, name: &str) -> Option<String> {
     }
     buf.truncate(got as usize);
     Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_xattr(_path: &Path, _name: &str) -> Option<String> {
+    None
 }
 
 // ---------------------------------------------------------------------------
