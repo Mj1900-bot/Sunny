@@ -156,8 +156,17 @@ PY
   fi
 
   # Fuse #2 — belt: cap THIS script's subtree below the uid ceiling.
+  # Dynamic: give the compile subtree ~400 slots above current baseline,
+  # but never exceed (cap - 200) so GUI + system daemons keep breathing.
   # If batching math is wrong, the script dies with EAGAIN, not the Mac.
-  ulimit -u 1024 2>/dev/null || true
+  local ulimit_target max_allowed
+  ulimit_target=$(( proc_used + 400 ))
+  max_allowed=$(( proc_cap - 200 ))
+  if (( ulimit_target > max_allowed )); then
+    ulimit_target=$max_allowed
+  fi
+  ulimit -u "$ulimit_target" 2>/dev/null || true
+  echo "  fuse: ulimit -u $ulimit_target (baseline $proc_used, cap $proc_cap)"
 
   start=$(date +%s)
 
@@ -192,8 +201,9 @@ PY
       export CARGO_BUILD_JOBS=2
       run_with_timeout 300 cargo test --lib --release --no-fail-fast \
         "${batch}::" -- --test-threads=2
-    ) >> "$log" 2>&1
-    batch_rc=$?
+    ) 2>&1 | tee -a "$log"
+    # PIPESTATUS[0] — cargo's exit, not tee's.
+    batch_rc=${PIPESTATUS[0]}
     [[ $batch_rc -ne 0 ]] && exit_code=$batch_rc
     # Reap window — zombies from this batch clear before the next starts.
     sleep 2
@@ -212,8 +222,8 @@ PY
     export CARGO_BUILD_JOBS=2
     run_with_timeout 300 cargo test --lib --release --no-fail-fast \
       -- --test-threads=2 "${skip_args[@]}"
-  ) >> "$log" 2>&1
-  batch_rc=$?
+  ) 2>&1 | tee -a "$log"
+  batch_rc=${PIPESTATUS[0]}
   [[ $batch_rc -ne 0 ]] && exit_code=$batch_rc
 
   end=$(date +%s)
