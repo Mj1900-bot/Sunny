@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { onChatChunk, onChatDone } from '../../hooks/useSunny';
 import { makeId, saveHistory, loadHistory, MAX_LLM_TURNS } from './session';
 import type { Message, Role } from './session';
+import { unwrapAgentEnvelope } from './unwrapEnvelope';
 
 type SendOptions = {
   chat: (text: string, opts: {
@@ -82,23 +83,23 @@ export function useChatMessages(opts: SendOptions) {
       }
       const activeId = streamingIdRef.current;
       streamingIdRef.current = null;
+      const cleanFull = full && full.length > 0 ? unwrapAgentEnvelope(full) : '';
       setMessages(prev => {
         if (activeId && prev.some(m => m.id === activeId)) {
           return prev.map(m =>
             m.id === activeId
-              ? { ...m, text: full && full.length > 0 ? full : m.text, streaming: false }
+              ? { ...m, text: cleanFull.length > 0 ? cleanFull : m.text, streaming: false }
               : m,
           );
         }
-        if (full && full.length > 0) {
-          return [...prev, { id: makeId(), role: 'sunny' as Role, text: full, ts: Date.now() }];
+        if (cleanFull.length > 0) {
+          return [...prev, { id: makeId(), role: 'sunny' as Role, text: cleanFull, ts: Date.now() }];
         }
         return prev;
       });
-      const finalText = full && full.length > 0 ? full : '';
-      if (finalText.length > 0) {
+      if (cleanFull.length > 0) {
         spokeForTurnRef.current = true;
-        speak(finalText).catch(err => console.error('ChatPanel: speak failed', err));
+        speak(cleanFull).catch(err => console.error('ChatPanel: speak failed', err));
       }
       setSending(false);
     });
@@ -131,11 +132,15 @@ export function useChatMessages(opts: SendOptions) {
         // bubble, but may race or not fire. Using the invoke return value as
         // authoritative final text fixes that idempotently.
         const hasReply = typeof reply === 'string' && reply.length > 0;
-        if (hasReply) {
+        const cleanReply = hasReply ? unwrapAgentEnvelope(reply as string) : '';
+        if (hasReply && cleanReply.length > 0) {
+          // Store the unwrapped text in history so subsequent turns feed
+          // human text back to the model, not the JSON envelope — the
+          // envelope round-trip confuses smaller models into echoing.
           const next = [
             ...historyRef.current,
             { role: 'user' as const, content: text },
-            { role: 'assistant' as const, content: reply as string },
+            { role: 'assistant' as const, content: cleanReply },
           ];
           const max = MAX_LLM_TURNS * 2;
           historyRef.current = next.length > max ? next.slice(-max) : next;
@@ -145,17 +150,17 @@ export function useChatMessages(opts: SendOptions) {
         setMessages(prev =>
           prev.map(m => {
             if (m.id !== sunnyId) return m;
-            const finalText = hasReply
-              ? (reply as string)
+            const finalText = cleanReply.length > 0
+              ? cleanReply
               : m.text.length > 0
               ? m.text
               : '(no reply)';
             return { ...m, text: finalText, streaming: false };
           }),
         );
-        if (hasReply && !doneAlreadyFired && !spokeForTurnRef.current) {
+        if (cleanReply.length > 0 && !doneAlreadyFired && !spokeForTurnRef.current) {
           spokeForTurnRef.current = true;
-          speak(reply as string).catch(err => console.error('ChatPanel: speak failed', err));
+          speak(cleanReply).catch(err => console.error('ChatPanel: speak failed', err));
         }
         setSending(false);
       } catch (error) {
