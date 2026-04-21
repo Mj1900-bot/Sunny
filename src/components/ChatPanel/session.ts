@@ -79,6 +79,31 @@ export function turnsToMessages(turns: readonly Turn[]): Message[] {
   });
 }
 
+/**
+ * Pull the human text out of an agent JSON envelope if the message was
+ * persisted pre-fix (the ChatPanel used to store raw `{"action":"answer",
+ * "text":"…"}` strings). Guard-clauses fall through on anything that
+ * isn't recognisably an envelope — plain text, system notices, or user
+ * messages pass untouched.
+ *
+ * Duplicated here instead of imported from unwrapEnvelope.ts so the
+ * session-persistence module stays dependency-free from component code
+ * (session.ts is imported by hooks, components, and tests).
+ */
+function unwrapPersistedText(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return raw;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (typeof parsed.action === 'string' && typeof parsed.text === 'string') {
+      return parsed.text;
+    }
+  } catch {
+    /* fall through */
+  }
+  return raw;
+}
+
 export function loadHistory(): Message[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -94,7 +119,14 @@ export function loadHistory(): Message[] {
         typeof (m as Message).text === 'string' &&
         typeof (m as Message).ts === 'number',
       )
-      .map(m => ({ id: m.id, role: m.role, text: m.text, ts: m.ts }));
+      .map(m => ({
+        id: m.id,
+        role: m.role,
+        // Migrate: any assistant message persisted as a raw envelope
+        // gets unwrapped to clean human text on load.
+        text: m.role === 'sunny' ? unwrapPersistedText(m.text) : m.text,
+        ts: m.ts,
+      }));
   } catch {
     return [];
   }
