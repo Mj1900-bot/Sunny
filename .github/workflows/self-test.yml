@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Tauri + audio + enigo system dependencies (Linux only)
         # Tauri 2.x -> webkit2gtk-4.1 + libsoup-3; alsa for cpal; libxdo for enigo (X11 input sim); build-essential for bundled rusqlite.
