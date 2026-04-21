@@ -20,8 +20,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Tauri + audio system dependencies
-        # Tauri 2.x -> webkit2gtk-4.1 + libsoup-3; alsa for cpal; build-essential for bundled rusqlite.
+      - name: Install Tauri + audio + enigo system dependencies
+        # Tauri 2.x -> webkit2gtk-4.1 + libsoup-3; alsa for cpal; libxdo for enigo (X11 input sim); build-essential for bundled rusqlite.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -30,6 +30,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libasound2-dev \
+            libxdo-dev \
             pkg-config \
             build-essential
 
