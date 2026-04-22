@@ -320,18 +320,44 @@ fn build_request_body(model: &str, system: &str, history: &[Value], stream: bool
     // apply_history_cache_breakpoint returns a new Vec — no mutation.
     let messages_cached = apply_history_cache_breakpoint(history_scrubbed);
 
-    // Breakpoint #2: the system prompt. Must be expressed as an array
-    // of text blocks when we want cache_control on it (a bare string
-    // cannot carry the marker). The soul bundle + SAFETY + TOOL_USE +
-    // base prelude is ~19 KB and identical across turns, so this is
-    // the highest-value cache target in the request.
-    let system_blocks = json!([
-        {
-            "type": "text",
-            "text": system_scrubbed,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]);
+    // Breakpoint #4 (cache WRITE for next turn): tag the LAST user
+    // message's last content block so this turn's request becomes part
+    // of the prefix Anthropic caches for the *next* turn. Without this,
+    // each turn only reads prior caches; the live turn is never stored,
+    // so prompt-cache hit rates stall at the previous turn's boundary.
+    let messages_cached = stamp_cache_control_on_last_user_message(messages_cached);
+
+    // Breakpoint #2: the system prompt. Split on SUNNY_CACHE_BOUNDARY so
+    // only the stable prefix (safety + capabilities + tool_use + persona
+    // + base) carries cache_control. The dynamic suffix (memory digest,
+    // continuity digest, query hint, name-seed, canary sentinel) sits in
+    // a second block WITHOUT a cache_control marker — when it changes
+    // between turns we invalidate only that block's contribution, not
+    // the whole ~19 KB prefix.
+    let (stable_prefix, dynamic_suffix) =
+        super::super::prompts::split_system_prompt_cache_boundary(&system_scrubbed);
+    let system_blocks = if dynamic_suffix.is_empty() {
+        // Legacy path: no boundary marker — whole prompt is stable.
+        json!([
+            {
+                "type": "text",
+                "text": stable_prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ])
+    } else {
+        json!([
+            {
+                "type": "text",
+                "text": stable_prefix,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": dynamic_suffix,
+            }
+        ])
+    };
 
     json!({
         "model": model,
@@ -341,6 +367,34 @@ fn build_request_body(model: &str, system: &str, history: &[Value], stream: bool
         "messages": messages_cached,
         "stream": stream,
     })
+}
+
+/// Apply Anthropic prompt-cache Breakpoint #4: stamp `cache_control:
+/// {type: "ephemeral"}` on the last content block of the LAST user
+/// message. Where [`apply_history_cache_breakpoint`] enables cache
+/// *reads* of the stable prefix, this enables cache *writes* for the
+/// live turn — the request body we're building becomes the cached
+/// prefix for the next turn. Mirrors Moltbot's tail-user-message
+/// policy in `src/agents/anthropic-payload-policy.ts`.
+fn stamp_cache_control_on_last_user_message(messages: Vec<Value>) -> Vec<Value> {
+    let last_user_idx = messages
+        .iter()
+        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
+    let last_user_idx = match last_user_idx {
+        None => return messages,
+        Some(i) => i,
+    };
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            if i == last_user_idx {
+                stamp_cache_control_on_last_block(msg)
+            } else {
+                msg
+            }
+        })
+        .collect()
 }
 
 /// Walk one chat message JSON and scrub every string leaf.  We

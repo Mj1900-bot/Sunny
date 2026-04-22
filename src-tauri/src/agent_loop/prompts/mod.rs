@@ -57,6 +57,26 @@ pub use tool_use_block::{build_tool_use_block, VOICE_LATENCY_RULE};
 pub use safety_block::SAFETY_INJECTION_DEFENCE as SAFETY_AMENDMENT;
 pub use tool_use_block::TOOL_USE_DIRECTIVE;
 
+/// Marker placed in the composed system prompt to separate the
+/// prompt-cache-stable prefix from the per-turn dynamic suffix. The
+/// Anthropic provider splits on this so `cache_control` only tags the
+/// stable half — session-specific content (memory digest, continuity
+/// digest, query hint, canary) stays below the marker and does not
+/// invalidate the prompt cache between turns.
+pub const SUNNY_CACHE_BOUNDARY: &str = "\n<!-- SUNNY_CACHE_BOUNDARY -->\n";
+
+/// Split a composed system prompt on [`SUNNY_CACHE_BOUNDARY`]. Returns
+/// `(stable_prefix, dynamic_suffix)`. When the marker isn't present
+/// (legacy prompts built without `build_system_prompt`) the whole string
+/// is treated as stable and the suffix is empty — callers fall back to
+/// the single-block behaviour.
+pub fn split_system_prompt_cache_boundary(s: &str) -> (String, String) {
+    match s.split_once(SUNNY_CACHE_BOUNDARY) {
+        Some((prefix, suffix)) => (prefix.to_string(), suffix.to_string()),
+        None => (s.to_string(), String::new()),
+    }
+}
+
 /// All inputs needed to build a system prompt. Using a struct means new
 /// optional fields can be added without breaking every call site.
 #[derive(Debug, Default)]
@@ -102,33 +122,44 @@ pub fn build_system_prompt(ctx: &PromptContext<'_>) -> String {
             + 512,
     );
 
+    // Stable prefix: identical across every turn in a session (modulo
+    // SOUL-bundle edits, which refresh every 5 s). Lives above the
+    // cache boundary so Anthropic's prompt cache serves it from the KV
+    // store instead of reprocessing ~19 KB of safety+tools+persona on
+    // every keystroke.
     out.push_str(&safety);
     out.push_str("\n\n");
     out.push_str(&capabilities);
     out.push_str("\n\n");
     out.push_str(&tool_use);
     out.push_str("\n\n");
-    if let Some(cont) = super::memory_integration::build_continuity_digest(3) {
-        out.push_str(&cont);
-        out.push_str("\n\n");
-    }
     out.push_str(&persona);
     out.push_str("\n\n");
     out.push_str(ctx.base);
 
-    if let Some(d) = ctx.digest {
+    // Everything below the boundary is per-session or per-turn state
+    // (recent session refs, recalled user facts, current-events nudge,
+    // name-seed, canary sentinel with its random token). Changing any
+    // of these is EXPECTED to invalidate that turn's cache read — but
+    // never the stable prefix above.
+    out.push_str(SUNNY_CACHE_BOUNDARY);
+
+    if let Some(cont) = super::memory_integration::build_continuity_digest(3) {
+        out.push_str(&cont);
         out.push_str("\n\n");
+    }
+    if let Some(d) = ctx.digest {
         out.push_str(d);
+        out.push_str("\n\n");
     }
     if let Some(hint) = ctx.query_hint {
-        out.push_str("\n\n");
         out.push_str(hint);
+        out.push_str("\n\n");
     }
     if ctx.needs_name_prompt {
-        out.push_str("\n\n");
         out.push_str(NAME_SEED_HINT);
+        out.push_str("\n\n");
     }
-    out.push_str("\n\n");
     out.push_str(&crate::security::canary::sentinel_line());
     out
 }
