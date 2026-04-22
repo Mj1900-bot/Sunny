@@ -19,11 +19,14 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 use super::super::catalog::catalog_merged;
 use super::super::types::{ToolCall, TurnOutcome};
 use super::super::helpers::truncate;
 use super::anthropic::{LLM_TIMEOUT_SECS, USER_AGENT};
+use super::glm::{drive_openai_sse_stream, OpenAiSseResult};
+use crate::event_bus::{publish, SunnyEvent};
 use crate::telemetry::{record_llm_turn, TelemetryEvent};
 
 pub const KIMI_URL: &str = "https://api.moonshot.ai/v1/chat/completions";
@@ -301,5 +304,142 @@ fn scrub_message_value(v: &Value) -> Value {
             Value::Object(out)
         }
         _ => v.clone(),
+    }
+}
+
+/// SSE-streaming variant of `kimi_turn`. Same pattern as
+/// `glm_turn_streaming` — both are OpenAI Chat Completions SSE, so
+/// the parse loop lives in `glm::drive_openai_sse_stream` and this
+/// function only provides provider-specific request building +
+/// telemetry decoding.
+///
+/// Kimi-K2.6 reasoning-mode note: like GLM-5.1, K2.6 emits prose in
+/// `reasoning_content` for hard prompts. The shared driver wraps
+/// those deltas in `<think>…</think>` so the frontend's streamSpeak
+/// can strip them before TTS.
+pub async fn kimi_turn_streaming(
+    _app: &AppHandle,
+    model: &str,
+    system: &str,
+    history: &[Value],
+) -> Result<TurnOutcome, String> {
+    let key = crate::secrets::moonshot_api_key().await.ok_or_else(|| {
+        "MOONSHOT_API_KEY not configured — run scripts/install-moonshot-key.sh <key>".to_string()
+    })?;
+
+    let system_scrubbed = crate::security::enforcement::scrub_texts(&[system.to_string()])
+        .pop()
+        .unwrap_or_else(|| system.to_string());
+    let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
+    messages.push(json!({"role": "system", "content": system_scrubbed}));
+    for m in history {
+        messages.push(scrub_message_value(m));
+    }
+
+    let tools: Vec<Value> = catalog_merged()
+        .iter()
+        .map(|t| {
+            let schema: Value = serde_json::from_str(t.input_schema)
+                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
+            json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": schema,
+                }
+            })
+        })
+        .collect();
+
+    // K2.6 quirks: temperature locked to 1, max_tokens capped at 2048
+    // — see the non-streaming `kimi_turn` for the full rationale.
+    let body = json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "temperature": 1,
+        "max_tokens": 2048,
+        "stream": true,
+        "stream_options": {"include_usage": true},
+    });
+
+    let turn_start_ms = chrono::Utc::now().timestamp_millis();
+    let turn_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let turn_id = format!("kimi:{model}:{turn_start_ms}:{turn_suffix}");
+
+    let started = Instant::now();
+    let client = crate::http::client();
+    let req = client
+        .post(KIMI_URL)
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream")
+        .header("user-agent", USER_AGENT)
+        .timeout(Duration::from_secs(LLM_TIMEOUT_SECS))
+        .json(&body);
+    let resp = crate::http::send(req)
+        .await
+        .map_err(|e| format!("kimi stream connect: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("kimi http {status}: {}", truncate(&body, 400)));
+    }
+
+    match drive_openai_sse_stream("kimi", resp, &turn_id).await? {
+        OpenAiSseResult::Final { text, usage } => {
+            publish(SunnyEvent::ChatChunk {
+                seq: 0,
+                boot_epoch: 0,
+                turn_id: turn_id.clone(),
+                delta: String::new(),
+                done: true,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+
+            let (input_tok, output_tok, cache_read) = usage
+                .as_ref()
+                .and_then(|u| serde_json::from_value::<KimiUsage>(u.clone()).ok())
+                .map(|u| (u.prompt_tokens, u.completion_tokens, u.cached_tokens))
+                .unwrap_or((0, 0, 0));
+            log::info!(
+                "kimi tokens: input={} output={} cache_read={} model={} duration_ms={}",
+                input_tok,
+                output_tok,
+                cache_read,
+                model,
+                started.elapsed().as_millis(),
+            );
+            let cost_usd = crate::telemetry::cost_estimate(
+                "kimi",
+                input_tok,
+                output_tok,
+                cache_read,
+                0,
+            );
+            record_llm_turn(TelemetryEvent {
+                provider: "kimi".to_string(),
+                model: model.to_string(),
+                input: input_tok,
+                cache_read,
+                cache_create: 0,
+                output: output_tok,
+                duration_ms: started.elapsed().as_millis() as u64,
+                at: chrono::Utc::now().timestamp(),
+                cost_usd,
+                tier: None,
+            });
+
+            Ok(TurnOutcome::Final { text, streamed: true })
+        }
+        OpenAiSseResult::ToolUseDetected => {
+            log::info!(
+                "kimi_turn_streaming: tool_calls detected, falling back to non-streaming"
+            );
+            kimi_turn(model, system, history).await
+        }
     }
 }

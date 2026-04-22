@@ -286,6 +286,7 @@ pub async fn keychain_set(kind: SecretKind, value: &str) -> Result<(), String> {
             match kind {
                 SecretKind::Anthropic   => "Anthropic",
                 SecretKind::Zai         => "Z.AI / GLM",
+                SecretKind::Moonshot    => "Moonshot / Kimi",
                 SecretKind::OpenAi      => "OpenAI",
                 SecretKind::OpenRouter  => "OpenRouter",
                 SecretKind::ElevenLabs  => "ElevenLabs",
@@ -442,6 +443,8 @@ fn probe_endpoint(kind: SecretKind) -> (&'static str, &'static str, &'static str
         SecretKind::OpenRouter => ("https://openrouter.ai/api/v1/auth/key", "authorization", "Bearer "),
         // Z.AI / GLM — /api/paas/v4/models requires bearer auth.
         SecretKind::Zai => ("https://open.bigmodel.cn/api/paas/v4/models", "authorization", "Bearer "),
+        // Moonshot / Kimi — /v1/models returns the model list for the key's org.
+        SecretKind::Moonshot => ("https://api.moonshot.ai/v1/models", "authorization", "Bearer "),
         // ElevenLabs — /v1/user returns subscription + character quota.
         SecretKind::ElevenLabs => ("https://api.elevenlabs.io/v1/user", "xi-api-key", ""),
         // Wavespeed — /api/v3/me or /api/v3/credits; we pick /credits since
