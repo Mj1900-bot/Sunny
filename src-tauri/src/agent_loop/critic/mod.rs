@@ -39,6 +39,7 @@ use super::core::{
 };
 use super::core_helpers::is_voice_session;
 use super::helpers::emit_agent_step;
+use super::model_router::TaskClass;
 use super::subagents::spawn_subagent;
 use score::has_actionable_issues;
 
@@ -51,6 +52,19 @@ const DRAFT_END_SENTINEL: &str = "<<<SUNNY_DRAFT_0x8F3A_END>>>";
 /// `Finalizing` arm. Runs the critic/refiner when all gates pass;
 /// returns the original draft unchanged otherwise.
 pub(super) async fn maybe_run_critic(ctx: &LoopCtx, iteration: u32, draft: String) -> String {
+    // Task-class gate: factual one-liners (`SimpleLookup`) don't
+    // benefit from a self-critique round — the streamed draft is
+    // already the final answer. Skipping here saves the critic's
+    // full LLM roundtrip on the majority of voice / chat-reply
+    // traffic when SUNNY_CRITIC is enabled. Other classes fall
+    // through to the normal enable/gate chain below.
+    if matches!(ctx.task_class, Some(TaskClass::SimpleLookup)) {
+        log::debug!(
+            "maybe_run_critic: skipped — task_class=SimpleLookup (no value in critique)"
+        );
+        return draft;
+    }
+
     let critic_enabled = ctx.is_main()
         && !is_voice_session(ctx.req.session_id.as_deref())
         && draft.len() > CRITIC_MIN_CHARS

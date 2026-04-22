@@ -385,6 +385,12 @@ pub(super) struct LoopCtx {
     /// `ctx.cost_agg = ctx.cost_agg.clone().add_metric(...)` after each
     /// completed LLM turn.
     pub(super) cost_agg: CostAggregator,
+    /// Most recent task classification from K4 — written at the top of
+    /// every `call_llm` iteration. `None` before the first iteration
+    /// (e.g. in `Preparing` / initial `Finalizing` if MAX_ITERATIONS=0).
+    /// Consumed by the critic in `Finalizing` to skip the refiner pass
+    /// for `SimpleLookup` turns (no value added on factual one-liners).
+    pub(super) task_class: Option<TaskClass>,
 }
 
 impl LoopCtx {
@@ -716,6 +722,7 @@ async fn prepare_context(
         pending_tools: None,
         session_guard,
         cost_agg: CostAggregator::new(),
+        task_class: None,
     })
 }
 
@@ -747,6 +754,9 @@ async fn call_llm(ctx: &mut LoopCtx, iteration: u32) -> Result<TurnOutcome, Stri
             }
         }
     };
+    // Stash the class on ctx so the Finalizing arm can consult it when
+    // deciding whether to run the critic. See critic::maybe_run_critic.
+    ctx.task_class = task_class;
 
     // ── K3a: privacy_detect ──────────────────────────────────────────────────
     // Scan the user message for PII / sensitive content. When flagged the
