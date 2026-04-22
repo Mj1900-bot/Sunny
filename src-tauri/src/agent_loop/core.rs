@@ -84,8 +84,8 @@ use super::providers::ollama::{
     ollama_turn, ollama_turn_speculative, ollama_turn_streaming, pick_ollama_model,
     SPECULATIVE_DRAFT_MODEL,
 };
-use super::providers::glm::{glm_turn, DEFAULT_GLM_MODEL};
-use super::providers::kimi::{kimi_turn, DEFAULT_KIMI_MODEL};
+use super::providers::glm::{glm_turn, glm_turn_streaming, DEFAULT_GLM_MODEL};
+use super::providers::kimi::{kimi_turn, kimi_turn_streaming, DEFAULT_KIMI_MODEL};
 use super::providers::auth::{anthropic_key_present, moonshot_key_present, zai_key_present};
 use super::prompts::{compose_system_prompt, default_system_prompt, query_hint, seed_user_profile_if_empty};
 use super::memory_integration::{auto_remember_from_user, build_memory_digest, write_run_episodic};
@@ -565,30 +565,45 @@ async fn prepare_context(
     let base_system =
         extract_system_prompt(&req.history).unwrap_or_else(|| default_system_prompt().to_string());
 
-    // Main-agent (depth 0) runs get a one-off "you don't know the user yet"
-    // nudge if no user-name fact exists in semantic memory. Sub-agents
-    // inherit their context from the parent so they skip this.
-    let needs_name_prompt = sub_id.is_none() && seed_user_profile_if_empty().await;
-
-    // Digest is cached per session for main agents — sub-agents always
-    // rebuild since their goal shape is different from the parent's.
-    let digest_started = Instant::now();
-    let memory_digest = if sub_id.is_none() {
-        if let Some(sid) = req.session_id.as_deref() {
-            super::session_cache::get_digest_or_compute(sid, || {
-                build_memory_digest(&req.message, &req.history)
-            })
-            .await
-        } else {
-            build_memory_digest(&req.message, &req.history).await
-        }
-    } else {
-        build_memory_digest(&req.message, &req.history).await
-    };
+    // Parallel prep: the name-seed probe and the memory digest have no
+    // data dependency on each other. On a cold turn the digest can take
+    // up to ~500 ms and `seed_user_profile_if_empty` up to ~50 ms;
+    // running them with `tokio::join!` cuts the smaller of the two off
+    // the critical path. On a warm turn (cached digest) this degenerates
+    // to the uncached name-seed probe only. All the sub-agent bypass
+    // logic stays inside the branches so security invariants are
+    // unchanged (cache never crosses the main/sub boundary).
+    let prep_started = Instant::now();
+    let (needs_name_prompt, memory_digest) = tokio::join!(
+        async {
+            // Main-agent (depth 0) runs get a one-off "you don't know
+            // the user yet" nudge if no user-name fact exists in
+            // semantic memory. Sub-agents inherit context from the parent.
+            sub_id.is_none() && seed_user_profile_if_empty().await
+        },
+        async {
+            // Digest is cached per session for main agents — sub-agents
+            // always rebuild since their goal shape differs from the
+            // parent's.
+            if sub_id.is_none() {
+                if let Some(sid) = req.session_id.as_deref() {
+                    super::session_cache::get_digest_or_compute(sid, || {
+                        build_memory_digest(&req.message, &req.history)
+                    })
+                    .await
+                } else {
+                    build_memory_digest(&req.message, &req.history).await
+                }
+            } else {
+                build_memory_digest(&req.message, &req.history).await
+            }
+        },
+    );
     log::info!(
-        "agent_run_inner: memory digest in {}ms (len={})",
-        digest_started.elapsed().as_millis(),
+        "agent_run_inner: parallel prep in {}ms (digest_len={}, name_prompt={})",
+        prep_started.elapsed().as_millis(),
         memory_digest.as_deref().map(str::len).unwrap_or(0),
+        needs_name_prompt,
     );
     let query_hint_line = query_hint(&req.message);
     let system = compose_system_prompt(
@@ -810,9 +825,18 @@ async fn call_llm(ctx: &mut LoopCtx, iteration: u32) -> Result<TurnOutcome, Stri
             cost_status,
             decision.reasoning,
         );
-        kimi_turn(&ctx.model, &ctx.system, &ctx.history)
-            .await
-            .map_err(|e| format!("kimi_unavailable: {e}"))?
+        // Stream on main agent; buffer on sub-agents. Same rationale
+        // as the anthropic branch above: sub-agent token streams must
+        // not reach the main chat UI.
+        if is_main {
+            kimi_turn_streaming(&ctx.app, &ctx.model, &ctx.system, &ctx.history)
+                .await
+                .map_err(|e| format!("kimi_unavailable: {e}"))?
+        } else {
+            kimi_turn(&ctx.model, &ctx.system, &ctx.history)
+                .await
+                .map_err(|e| format!("kimi_unavailable: {e}"))?
+        }
     } else {
         // Apply tier routing: translate Tier to Backend + model_id.
         let (routed_backend, routed_model) = provider_from_tier(decision.tier);
@@ -1305,9 +1329,20 @@ async fn dispatch_to_tier(
             }
         }
         Tier::Cloud => {
-            glm_turn(&ctx.model, &ctx.system, &ctx.history)
-                .await
-                .map_err(|e| format!("glm_unavailable: {e}"))
+            // Stream on main agent; buffer on sub-agents. Without the
+            // streaming path the user waits 8–14 s on a buffered GLM
+            // response before any token reaches the UI. Sub-agents stay
+            // buffered so their token streams don't pollute the main
+            // chat surface.
+            if is_main {
+                glm_turn_streaming(&ctx.app, &ctx.model, &ctx.system, &ctx.history)
+                    .await
+                    .map_err(|e| format!("glm_unavailable: {e}"))
+            } else {
+                glm_turn(&ctx.model, &ctx.system, &ctx.history)
+                    .await
+                    .map_err(|e| format!("glm_unavailable: {e}"))
+            }
         }
         Tier::Premium => {
             // K2: Claude Code CLI provider. No tool dispatch — Claude Code
