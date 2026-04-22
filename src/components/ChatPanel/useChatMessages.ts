@@ -7,9 +7,23 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { onChatChunk, onChatDone } from '../../hooks/useSunny';
+import { useVoiceChatStore } from '../../store/voiceChat';
 import { makeId, saveHistory, loadHistory, MAX_LLM_TURNS } from './session';
 import type { Message, Role } from './session';
 import { unwrapAgentEnvelope } from './unwrapEnvelope';
+
+/**
+ * True while useVoiceChat is actively driving TTS for a turn. The voice
+ * hook flips this in onSpeakStart and clears it after its speaker flush.
+ * When set, the chat-panel pipeline MUST NOT call speak() — otherwise
+ * two independent pipelines both send the reply to Kokoro, the backend
+ * dedup can't catch it because voice streams by sentence while chat
+ * speaks the whole reply (different strings → dedup miss), and the user
+ * hears two overlapping voices.
+ */
+function isVoiceSpeaking(): boolean {
+  return useVoiceChatStore.getState().isVoiceSpeaking;
+}
 
 type SendOptions = {
   chat: (text: string, opts: {
@@ -99,7 +113,12 @@ export function useChatMessages(opts: SendOptions) {
       });
       if (cleanFull.length > 0) {
         spokeForTurnRef.current = true;
-        speak(cleanFull).catch(err => console.error('ChatPanel: speak failed', err));
+        // Skip if useVoiceChat already owns TTS for this turn (voice
+        // turn driving the chat panel via event-bus mirror). Without
+        // this guard the user hears Kokoro twice in parallel.
+        if (!isVoiceSpeaking()) {
+          speak(cleanFull).catch(err => console.error('ChatPanel: speak failed', err));
+        }
       }
       setSending(false);
     });
@@ -160,7 +179,11 @@ export function useChatMessages(opts: SendOptions) {
         );
         if (cleanReply.length > 0 && !doneAlreadyFired && !spokeForTurnRef.current) {
           spokeForTurnRef.current = true;
-          speak(cleanReply).catch(err => console.error('ChatPanel: speak failed', err));
+          // Same guard as onChatDone — if voice owns TTS for this turn,
+          // don't fire a parallel chat speak().
+          if (!isVoiceSpeaking()) {
+            speak(cleanReply).catch(err => console.error('ChatPanel: speak failed', err));
+          }
         }
         setSending(false);
       } catch (error) {

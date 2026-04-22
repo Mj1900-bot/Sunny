@@ -481,6 +481,10 @@ export function useVoiceChat(): VoiceChatApi {
           if (!hasSpoken) {
             hasSpoken = true;
             setState('speaking');
+            // Tell the chat-panel pipeline that voice owns TTS for this
+            // turn so its parallel speak() call in useChatMessages bails
+            // out (see the isVoiceSpeaking guard over there).
+            useVoiceChatStore.getState().setVoiceSpeaking(true);
           }
         },
         onError: (msg) => {
@@ -525,6 +529,7 @@ export function useVoiceChat(): VoiceChatApi {
           setError(`Chat failed: ${msg}`);
           await speaker.stop();
           speakerRef.current = null;
+          useVoiceChatStore.getState().setVoiceSpeaking(false);
           setState('idle');
           return;
         }
@@ -538,6 +543,7 @@ export function useVoiceChat(): VoiceChatApi {
       if (turnId !== turnIdRef.current) {
         await speaker.stop();
         speakerRef.current = null;
+        useVoiceChatStore.getState().setVoiceSpeaking(false);
         // This path previously fell through without `setState('idle')`.
         // A barge-in that bumped turnIdRef usually resets state itself,
         // but pressTalk-from-other-states can skip it, wedging the UI
@@ -609,6 +615,21 @@ export function useVoiceChat(): VoiceChatApi {
       ]);
       trace('speaker_flush_ok');
       speakerRef.current = null;
+      // Release the cross-hook TTS lock so the chat-panel pipeline can
+      // resume calling speak() on subsequent text-mode turns.
+      useVoiceChatStore.getState().setVoiceSpeaking(false);
+
+      // After TTS finishes, we need to transition back to idle. The
+      // onSpeakStart callback flipped us to 'speaking' at the top of
+      // the TTS stream, but there's no symmetric handler that flips
+      // back — without this explicit reset the orb stays pinned on
+      // SPEAKING until the user hits STOP, and subsequent push-to-talk
+      // has to clear the wedge manually. Guard on state so we don't
+      // fight a barge-in that's already moved us to 'recording'.
+      if (stateRef.current === 'speaking') {
+        setState('idle');
+        trace('post_flush_idle');
+      }
 
       if (continuousRef.current) {
         resumeTimerRef.current = window.setTimeout(() => {

@@ -21,15 +21,25 @@ type VoiceChatState = {
    *  ChatPanel can detect a new turn even when the text is identical to the
    *  previous one (e.g. the user says the same thing twice). */
   turnSeq: number;
+  /** True while useVoiceChat owns TTS for a turn. ChatPanel's chat-side
+   *  speak() consults this to avoid parallel Kokoro calls — the two hooks
+   *  used to race with different text strings (voice streams by sentence,
+   *  chat speaks the whole reply), producing the 'two overlapping voices'
+   *  symptom users kept reporting. Voice flips this on first speak-start
+   *  and clears it after the TTS flush completes. */
+  isVoiceSpeaking: boolean;
   setTranscript: (text: string) => void;
   setResponse: (text: string) => void;
+  setVoiceSpeaking: (v: boolean) => void;
 };
 
 export const useVoiceChatStore = create<VoiceChatState>(set => ({
   transcript: '',
   response: '',
   turnSeq: 0,
+  isVoiceSpeaking: false,
   setTranscript: (text: string) =>
     set(s => ({ transcript: text, turnSeq: s.turnSeq + 1 })),
   setResponse: (text: string) => set({ response: text }),
+  setVoiceSpeaking: (v: boolean) => set({ isVoiceSpeaking: v }),
 }));
