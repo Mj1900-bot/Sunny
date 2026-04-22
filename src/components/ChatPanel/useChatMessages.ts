@@ -98,7 +98,16 @@ export function useChatMessages(opts: SendOptions) {
       const activeId = streamingIdRef.current;
       streamingIdRef.current = null;
       const cleanFull = full && full.length > 0 ? unwrapAgentEnvelope(full) : '';
+      // Detect tool-only turn: full was a non-answer envelope (unwrap
+      // returned empty) but the raw full was non-empty. In that case
+      // the streaming bubble holds the raw JSON — drop it entirely
+      // rather than leaving '(no reply)' or the envelope text in the
+      // transcript.
+      const wasToolOnly = !!full && full.length > 0 && cleanFull.length === 0;
       setMessages(prev => {
+        if (wasToolOnly && activeId) {
+          return prev.filter(m => m.id !== activeId);
+        }
         if (activeId && prev.some(m => m.id === activeId)) {
           return prev.map(m =>
             m.id === activeId
@@ -166,8 +175,13 @@ export function useChatMessages(opts: SendOptions) {
         }
         const doneAlreadyFired = streamingIdRef.current === null;
         streamingIdRef.current = null;
-        setMessages(prev =>
-          prev.map(m => {
+        // Tool-only turn: raw reply was a non-answer envelope and
+        // unwrapped to nothing. Remove the placeholder sunnyMsg so we
+        // don't leave '(no reply)' in the transcript.
+        const wasToolOnly = hasReply && cleanReply.length === 0;
+        setMessages(prev => {
+          if (wasToolOnly) return prev.filter(m => m.id !== sunnyId);
+          return prev.map(m => {
             if (m.id !== sunnyId) return m;
             const finalText = cleanReply.length > 0
               ? cleanReply
@@ -175,8 +189,8 @@ export function useChatMessages(opts: SendOptions) {
               ? m.text
               : '(no reply)';
             return { ...m, text: finalText, streaming: false };
-          }),
-        );
+          });
+        });
         if (cleanReply.length > 0 && !doneAlreadyFired && !spokeForTurnRef.current) {
           spokeForTurnRef.current = true;
           // Same guard as onChatDone — if voice owns TTS for this turn,

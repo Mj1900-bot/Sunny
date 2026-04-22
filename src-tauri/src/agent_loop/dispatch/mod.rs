@@ -200,7 +200,7 @@ pub async fn dispatch_tool(
     }
 
     // Enforcement-policy consultation.
-    let needs_confirm = match security::enforcement::tool_verdict(&name, dangerous) {
+    let mut needs_confirm = match security::enforcement::tool_verdict(&name, dangerous) {
         Ok(nc) => nc,
         Err(reason) => {
             let msg = format!("policy: {reason}");
@@ -223,6 +223,28 @@ pub async fn dispatch_tool(
             return wrap_error(&name, "policy_denied", msg, false);
         }
     };
+
+    // Safe-apps allowlist bypass. app_launch and app_activate are
+    // flagged dangerous: true at the tool-spec level because they can
+    // launch arbitrary GUI binaries, but the common agent pattern is
+    // "open Safari to go to facebook.com" — asking the user to approve
+    // every Safari / Finder / Calendar launch is exactly the
+    // "automation-that-constantly-interrupts" anti-UX. When the input
+    // name matches a known-safe app, suppress the confirm requirement.
+    // The tool-dispatch audit event still fires so the action is
+    // logged regardless.
+    if needs_confirm && (name == "app_launch" || name == "app_activate") {
+        let app_name = call
+            .input
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if is_safe_app(&app_name) {
+            log::info!("dispatch: auto-approving {name}({app_name}) via safe-apps allowlist");
+            needs_confirm = false;
+        }
+    }
 
     // Rust-side constitution check.
     {
@@ -478,4 +500,31 @@ pub async fn dispatch_tool(
     });
 
     output
+}
+
+/// Lowercase app names that may be launched without a ConfirmGate
+/// prompt. These are standard macOS first-party / widely-installed
+/// apps where launching them is a plainly routine action — matching
+/// the user expectation that "an automation assistant opens Safari
+/// without asking". Anything not on this list still goes through
+/// confirmation.
+///
+/// Keep the list conservative. Never auto-approve anything that can
+/// execute arbitrary commands (Terminal, iTerm) or modify system
+/// state without further confirmation on its own (Disk Utility, etc).
+fn is_safe_app(name_lower: &str) -> bool {
+    matches!(
+        name_lower,
+        // Apple first-party consumer apps
+        "safari" | "finder" | "calendar" | "messages" | "mail" | "notes"
+        | "reminders" | "maps" | "news" | "music" | "podcasts" | "tv"
+        | "app store" | "books" | "photos" | "preview" | "contacts"
+        | "facetime" | "weather" | "stocks" | "voice memos" | "home"
+        | "system settings" | "system preferences" | "calculator"
+        // Common third-party the user has per their memory
+        | "antigravity" | "claude" | "cursor" | "vscode" | "visual studio code"
+        | "chrome" | "firefox" | "arc" | "brave" | "edge"
+        | "spotify" | "slack" | "discord" | "zoom" | "obsidian" | "notion"
+        | "1password" | "chatgpt" | "chatgpt atlas"
+    )
 }
