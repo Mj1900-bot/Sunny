@@ -15,7 +15,6 @@ use crate::browser::cdp::types::{
 };
 
 const SELECTOR_WAIT_DEFAULT_MS: u64 = 5_000;
-const NETWORK_IDLE_DEFAULT_MS: u64 = 10_000;
 const READ_TEXT_CAP: usize = 16_000;
 
 // ---------------------------------------------------------------------------

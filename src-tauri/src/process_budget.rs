@@ -145,16 +145,6 @@ impl SpawnGuard {
         }
     }
 
-    /// Try to acquire immediately without waiting. Useful for
-    /// fire-and-forget hot paths (metrics pollers, event emitters) that
-    /// should **skip** their side-effect if the budget is saturated rather
-    /// than queue behind user-facing work.
-    pub fn try_acquire() -> Option<Self> {
-        semaphore()
-            .try_acquire()
-            .ok()
-            .map(|permit| Self { _permit: permit })
-    }
 }
 
 /// Snapshot of current spawn-permit usage. Exposed for the diagnostics /
@@ -208,18 +198,36 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn spawn_guard_blocks_when_saturated() {
-        // Hold all permits. The next acquire should time out inside a
-        // much shorter window than SPAWN_ACQUIRE_TIMEOUT so the test
-        // finishes quickly; we assert the error message contains the
-        // "spawn budget exhausted" prefix so any refactor that drops
-        // the wording is caught here.
-        let mut held = Vec::with_capacity(SPAWN_PERMITS);
+        use std::time::Duration;
+        // Hold all permits by calling `acquire` in parallel and keeping
+        // the returned guards. Each `acquire` is wrapped in a short
+        // timeout so the test finishes quickly even if the semaphore
+        // implementation changes — we only care that permits are
+        // handed out up to SPAWN_PERMITS and withheld after.
+        let mut held: Vec<SpawnGuard> = Vec::with_capacity(SPAWN_PERMITS);
         for _ in 0..SPAWN_PERMITS {
-            held.push(SpawnGuard::try_acquire().expect("permit available"));
+            let g = tokio::time::timeout(Duration::from_millis(100), SpawnGuard::acquire())
+                .await
+                .expect("acquire must not time out while permits remain")
+                .expect("permit available");
+            held.push(g);
         }
 
-        let try_now = SpawnGuard::try_acquire();
-        assert!(try_now.is_none(), "try_acquire must fail when saturated");
+        // Further acquire must block — bound the wait so the test
+        // finishes fast. A pending future times out as Err(Elapsed);
+        // a spawn-budget-exhausted result would be Ok(Err(..)). We only
+        // care that the outer Result timed out; SpawnGuard doesn't
+        // implement Debug so we don't format the guard itself.
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(50),
+            SpawnGuard::acquire(),
+        )
+        .await;
+        assert!(
+            blocked.is_err(),
+            "acquire must pend (not resolve) when semaphore is saturated; \
+             got Ok(_) instead of timeout",
+        );
 
         let snap = spawn_budget_snapshot();
         assert_eq!(snap.total, SPAWN_PERMITS);
@@ -228,8 +236,11 @@ mod tests {
 
         // Release one permit; the next acquire should succeed immediately.
         held.pop();
-        let regained = SpawnGuard::try_acquire();
-        assert!(regained.is_some(), "permit must become available after release");
+        let regained = tokio::time::timeout(Duration::from_millis(100), SpawnGuard::acquire())
+            .await
+            .expect("acquire must succeed once a permit is freed")
+            .expect("permit freed");
+        drop(regained);
     }
 
     #[test]

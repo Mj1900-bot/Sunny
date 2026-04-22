@@ -28,8 +28,6 @@ pub const SCORE_TOOL_REFERENCED: u32 = 800;
 pub const SCORE_ERROR_ENVELOPE: u32 = 700;
 /// Ordinary user message (not the first).
 pub const SCORE_USER_PLAIN: u32 = 400;
-/// Ordinary assistant message that is referenced by later messages.
-pub(super) const SCORE_ASSISTANT_REFERENCED: u32 = 350;
 /// Ordinary assistant prose message.
 pub const SCORE_ASSISTANT_PLAIN: u32 = 300;
 /// Tool block with no downstream reference.
@@ -103,35 +101,6 @@ pub(super) fn contains_error_envelope(msg: &Value) -> bool {
 // ---------------------------------------------------------------------------
 // Tool-id reference tracking
 // ---------------------------------------------------------------------------
-
-/// Collect all tool-use IDs emitted in assistant messages within `history`.
-pub(crate) fn collect_tool_use_ids(history: &[Value]) -> std::collections::HashSet<String> {
-    let mut ids = std::collections::HashSet::new();
-    for msg in history {
-        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        // Anthropic: content array with tool_use blocks
-        if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
-            for item in arr {
-                if item.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                    if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                        ids.insert(id.to_owned());
-                    }
-                }
-            }
-        }
-        // Ollama: tool_calls array
-        if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-            for call in calls {
-                if let Some(id) = call.get("id").and_then(|i| i.as_str()) {
-                    ids.insert(id.to_owned());
-                }
-            }
-        }
-    }
-    ids
-}
 
 /// Extract tool-result IDs referenced within a message (the `tool_use_id`
 /// fields in Anthropic tool_result blocks).

@@ -137,13 +137,8 @@ pub struct OpenClawFunctionCall {
 /// Resolve the chat-completions URL.  Checks `OPENCLAW_GATEWAY_URL` first
 /// (stripped of trailing slash), then falls back to the loopback default.
 fn resolve_chat_url() -> String {
-    if let Ok(base) = std::env::var("OPENCLAW_GATEWAY_URL") {
-        let base = base.trim_end_matches('/');
-        if !base.is_empty() {
-            return format!("{base}/v1/chat/completions");
-        }
-    }
-    OPENCLAW_CHAT_URL.to_string()
+    let base = std::env::var("OPENCLAW_GATEWAY_URL").ok();
+    build_chat_url(base.as_deref())
 }
 
 /// Optional bearer token from `OPENCLAW_GATEWAY_TOKEN`.

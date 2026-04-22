@@ -1,16 +1,28 @@
 //! Shared path helpers for document tools.
 //!
 //! Resolves `~/`-prefixed paths and validates that the resolved path is a
-//! regular file the process can read.  Network paths (`smb://`, `afp://`,
-//! etc.) are detected and returned as-is with a capability escalation note
-//! — the dispatcher must check `is_network_path` and enforce L1 before
-//! calling any I/O operation.
+//! regular file the process can read. Network paths (`smb://`, `afp://`,
+//! etc.) are rejected up front — L0 document tools are local-only. A
+//! caller that genuinely needs remote paths must hold the
+//! `documents.network` capability and resolve through a dedicated code
+//! path, not `resolve_local`.
 
 use std::path::PathBuf;
 
 /// Resolve `~/` to the home directory and return the canonical [`PathBuf`].
-/// Returns `Err` if the path does not exist or is not a regular file.
+/// Rejects network paths (SMB/AFP/FTP/NFS/UNC) and returns `Err` when the
+/// resolved path does not exist or is not a regular file.
 pub fn resolve_local(raw: &str) -> Result<PathBuf, String> {
+    // Gate network paths at L0 — document tools must not quietly follow
+    // an `smb://` URL that would exfiltrate from a network mount. A
+    // dispatcher that legitimately wants network access has to check
+    // `is_network_path` and confirm the `documents.network` cap before
+    // reaching for a separate resolver.
+    if is_network_path(raw) {
+        return Err(format!(
+            "network path requires documents.network capability: {raw}"
+        ));
+    }
     let expanded = shellexpand::tilde(raw).into_owned();
     let p = PathBuf::from(&expanded);
     if !p.exists() {

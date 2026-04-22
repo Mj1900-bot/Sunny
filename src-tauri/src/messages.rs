@@ -394,21 +394,12 @@ mod tests {
         let sample = r#"[
           {"chat_identifier":"+16045551234","display_name":"","handles":"+16045551234","style":45,"service":"iMessage","last_date":631152000000000000,"msg_count":1,"last_text":"yo","last_has_attachment":0}
         ]"#;
-        let mut idx = crate::contacts_book::ContactIndex::empty();
         // Use the public lookup path via constructing an index through the
-        // same normalise we use elsewhere.
+        // same normalise we use elsewhere. `by_handle` is pub(crate) but
+        // only observable via `with_entry` from out-of-module callers.
         let ab = {
-            // Build via raw entry; ContactIndex's inner map is pub(crate).
-            let digits = crate::contacts_book::normalise_handle("+16045551234");
-            // We can't reach the private field from here in production code,
-            // but this module is in the same crate so `by_handle` is visible
-            // via an intentional test-only helper.
-            let _ = digits;
-            idx = crate::contacts_book::ContactIndex::with_entry(
-                "+16045551234",
-                "Mom",
-            );
-            idx
+            let _digits = crate::contacts_book::normalise_handle("+16045551234");
+            crate::contacts_book::ContactIndex::with_entry("+16045551234", "Mom")
         };
         let rows = parse_json(sample, &ab).unwrap();
         assert_eq!(rows[0].display, "Mom");

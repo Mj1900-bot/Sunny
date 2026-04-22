@@ -53,10 +53,6 @@ fn sunny_dir() -> Result<PathBuf, String> {
     Ok(home.join(DIR_NAME))
 }
 
-fn marker_path() -> Result<PathBuf, String> {
-    sunny_dir().map(|d| d.join(MARKER_NAME))
-}
-
 /// Check whether the previous run exited cleanly, then write a fresh
 /// marker so *this* run's exit will be observable by the next one.
 ///

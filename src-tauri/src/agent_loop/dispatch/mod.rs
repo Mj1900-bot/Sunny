@@ -42,7 +42,6 @@ pub use wrap::{escape_untrusted_marker, wrap_error, wrap_success};
 
 use std::time::{Duration, Instant};
 
-use serde_json::json;
 use tauri::AppHandle;
 use uuid::Uuid;
 

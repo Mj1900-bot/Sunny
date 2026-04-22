@@ -870,7 +870,6 @@ mod tests {
     /// is fully hermetic and doesn't touch `~/.sunny/continuity.db`.
     #[test]
     fn write_run_episodic_creates_continuity_node() {
-        use std::path::PathBuf;
         use crate::memory::continuity_store::{ContinuityStore, NodeKind};
         use std::sync::{Arc, Mutex};
 

@@ -31,7 +31,8 @@ use crate::app_state::AppState;
 pub struct CurrentView {
     pub view: String,
     pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(optional)]
     pub subtitle: Option<String>,
 }
 

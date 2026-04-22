@@ -52,12 +52,6 @@ impl PtyRegistry {
     pub fn new() -> Self {
         Self { sessions: Mutex::new(HashMap::new()) }
     }
-
-    /// Current count of live sessions. Cheap — used by the cap check in
-    /// `open()` and by diagnostics. Takes the lock briefly.
-    pub fn session_count(&self) -> usize {
-        self.sessions.lock().map(|s| s.len()).unwrap_or(0)
-    }
 }
 
 #[derive(Serialize, Clone)]

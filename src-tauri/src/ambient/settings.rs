@@ -67,67 +67,24 @@ impl Default for AmbientSettings {
 // ---------------------------------------------------------------------------
 
 pub(super) fn load_settings() -> AmbientSettings {
-    let defaults = AmbientSettings::default();
-    let Ok(value) = settings::load() else { return defaults };
-    let Some(obj) = value.as_object() else { return defaults };
-
-    let enabled = obj
-        .get("ambient_enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(defaults.enabled);
-
-    let mail_threshold = obj
-        .get("ambient_mail_threshold")
-        .and_then(|v| v.as_i64())
-        .filter(|n| *n > 0)
-        .unwrap_or(defaults.mail_threshold);
-
-    // Battery thresholds are optional (backward compat): if absent, keep the
-    // historical hardcoded constants. Clamp to (0, 100] so a malformed 0 or
-    // negative value can't disable the trigger entirely.
-    let battery_threshold_pct = obj
-        .get("ambient_battery_threshold")
-        .and_then(|v| v.as_f64())
-        .filter(|n| *n > 0.0 && *n <= 100.0)
-        .unwrap_or(defaults.battery_threshold_pct);
-
-    let focus_battery_threshold_pct = obj
-        .get("ambient_focus_battery_threshold")
-        .and_then(|v| v.as_f64())
-        .filter(|n| *n > 0.0 && *n <= 100.0)
-        .unwrap_or(defaults.focus_battery_threshold_pct);
-
-    let native_notify = obj
-        .get("ambient_native_notify")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(defaults.native_notify);
-
-    // Settings key is `ambientModel` (camelCase to match the existing
-    // `~/.sunny/settings.json` convention for user-facing keys; compare
-    // `pushToTalkKey`, `wakePhrase`, etc.). Snake_case `ambient_model`
-    // is also accepted so power users who edited ambient_native_notify
-    // next door don't get tripped up by the inconsistency.
-    let ambient_model = obj
-        .get("ambientModel")
-        .or_else(|| obj.get("ambient_model"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(defaults.ambient_model);
-
-    AmbientSettings {
-        enabled,
-        mail_threshold,
-        battery_threshold_pct,
-        focus_battery_threshold_pct,
-        native_notify,
-        ambient_model,
+    match settings::load() {
+        Ok(value) => parse_settings(value),
+        Err(_) => AmbientSettings::default(),
     }
 }
 
-/// Parse an `AmbientSettings` from a raw JSON `Value`. Extracted from
-/// `load_settings` so tests can drive the parse logic without touching
-/// `$HOME`. Production code calls `load_settings()` directly.
+/// Parse an `AmbientSettings` from a raw JSON `Value`. `load_settings`
+/// delegates here after reading `$HOME/.sunny/settings.json`; tests
+/// drive this directly so they don't have to touch `$HOME`.
+///
+/// Conservative defaults when the value isn't an object, when a field
+/// is missing, or when a numeric field is out of range. Battery
+/// thresholds are clamped to (0, 100] so a malformed 0 or negative
+/// value can't disable the trigger entirely. The settings key is
+/// `ambientModel` (camelCase to match user-facing conventions like
+/// `pushToTalkKey`, `wakePhrase`); snake_case `ambient_model` is also
+/// accepted for power users who edited `ambient_native_notify`
+/// next door.
 pub(super) fn parse_settings(value: serde_json::Value) -> AmbientSettings {
     let defaults = AmbientSettings::default();
     let Some(obj) = value.as_object() else { return defaults };

@@ -102,29 +102,6 @@ pub fn action_risk(page_url: &str, selector: &str) -> RiskLevel {
 }
 
 // ---------------------------------------------------------------------------
-// Slug helper — safe filename from URL
-// ---------------------------------------------------------------------------
-
-/// Convert `url` to a filename-safe ASCII slug, max 80 chars. Used for
-/// naming files under `~/Downloads/sunny-browser/`.
-pub fn url_to_slug(url: &str) -> String {
-    let slug: String = url
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect::<String>()
-        .split('_')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("_");
-    let trimmed = slug.trim_matches('_');
-    if trimmed.len() > 80 {
-        trimmed[..80].to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -184,17 +161,4 @@ mod tests {
         assert_eq!(action_risk("https://accounts.google.com/signin/v2", "#identifierId"), RiskLevel::L4);
     }
 
-    #[test]
-    fn url_to_slug_sanitises_special_chars() {
-        let slug = url_to_slug("https://example.com/some/path?q=hello world");
-        assert!(!slug.contains('/'));
-        assert!(!slug.contains('?'));
-        assert!(!slug.contains(' '));
-    }
-
-    #[test]
-    fn url_to_slug_truncates_long_urls() {
-        let long = "https://".to_string() + &"a".repeat(200);
-        assert!(url_to_slug(&long).len() <= 80);
-    }
 }

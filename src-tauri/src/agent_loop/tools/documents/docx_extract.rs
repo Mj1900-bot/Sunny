@@ -10,7 +10,7 @@
 
 use std::io::{Cursor, Read};
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::path_util;
 
@@ -136,6 +136,8 @@ fn parse_paragraphs(xml: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use serde_json::Value;
 
     fn fixture(name: &str) -> String {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();

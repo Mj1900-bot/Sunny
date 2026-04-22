@@ -34,7 +34,8 @@ use ts_rs::TS;
 pub struct CalendarSnapshot {
     pub active_date: String,
     pub view_mode: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(optional)]
     pub selected_event_id: Option<String>,
     #[serde(default)]
     pub hidden_calendars: Vec<String>,
@@ -61,7 +62,8 @@ pub struct TasksSnapshot {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct InboxSnapshot {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(optional)]
     pub selected_item_id: Option<String>,
     #[serde(default)]
     pub filter: String,
@@ -80,7 +82,7 @@ pub struct FocusSnapshot {
     pub elapsed_secs: u32,
     #[serde(default)]
     pub target_secs: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub mode: Option<String>,
 }
 
@@ -88,7 +90,8 @@ pub struct FocusSnapshot {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct NotesSnapshot {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(optional)]
     pub selected_note_id: Option<String>,
     #[serde(default)]
     pub folder: String,
@@ -102,7 +105,8 @@ pub struct NotesSnapshot {
 pub struct VoiceSnapshot {
     #[serde(default)]
     pub recording: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[ts(optional)]
     pub last_transcript: Option<String>,
     #[serde(default)]
     #[ts(type = "number")]

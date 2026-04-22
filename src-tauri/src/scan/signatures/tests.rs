@@ -1,21 +1,14 @@
-use super::*;
-use std::path::Path;
-use crate::scan::types::Verdict;
-
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    // Re-import at this depth: a `use super::*` here resolves to the
-    // outer file-level scope, which imported from `signatures` via
-    // `use super::*`, but glob re-exports don't transitively expose
-    // those symbols.  Pull them in directly instead.
+    // Glob imports from sibling modules — the inner test mod resolves
+    // `super::super` to the `signatures` module root, not through the
+    // outer file-level `use super::*` (glob re-exports don't transit).
     use super::super::patterns::*;
     use super::super::matcher::*;
     use super::super::catalog::*;
-    use super::super::entries::*;
-    use super::super::types::*;
     use super::super::super::types::Verdict;
     use std::path::Path;
 

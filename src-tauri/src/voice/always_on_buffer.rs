@@ -26,8 +26,6 @@ const RING_CAPACITY: usize = (BUFFER_RATE_HZ * RING_SECONDS) as usize;
 /// How many seconds of audio to include in the "pre-wake" snippet handed to
 /// the STT pipeline. 2 s × 16 000 = 32 000 samples.
 pub const SNIPPET_SECONDS: u32 = 2;
-const SNIPPET_SAMPLES: usize = (BUFFER_RATE_HZ * SNIPPET_SECONDS) as usize;
-
 
 use std::sync::OnceLock;
 
@@ -180,6 +178,12 @@ mod tests {
             assert!((s - 0.9).abs() < 1e-5, "expected 0.9, got {s}");
         }
     }
+
+    /// Samples per snippet, computed identically to the definition in
+    /// `snippet()` (which passes `SNIPPET_SECONDS` through
+    /// `snapshot_last_n_seconds`). Test-local so production builds don't
+    /// carry a constant only tests need.
+    const SNIPPET_SAMPLES: usize = (BUFFER_RATE_HZ * SNIPPET_SECONDS) as usize;
 
     /// snippet() returns exactly SNIPPET_SAMPLES or fewer when buffer is short.
     #[test]

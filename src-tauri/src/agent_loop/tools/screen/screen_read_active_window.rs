@@ -160,8 +160,6 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn resolve_region_has_correct_origin_when_window_found() {
         // This is a pure logic test: verify the coordinate math in the

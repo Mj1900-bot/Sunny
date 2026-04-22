@@ -801,7 +801,6 @@ mod tests {
     #[tokio::test]
     async fn call_tool_401_error_mentions_install_script() {
         // Spin up a minimal HTTP server that always returns 401.
-        use std::sync::Arc;
         use tokio::net::TcpListener;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

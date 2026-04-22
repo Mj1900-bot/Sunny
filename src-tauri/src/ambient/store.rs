@@ -125,7 +125,6 @@ pub(super) fn next_differs(a: &AmbientDisk, b: &AmbientDisk) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::fs;
 
     /// Build a temp directory that is automatically cleaned up at the end of

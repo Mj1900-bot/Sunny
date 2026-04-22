@@ -62,7 +62,6 @@ pub struct Deliberator {
 #[derive(Clone, Debug)]
 struct PendingSignal {
     source: String,
-    payload: String,
     at_secs: i64,
 }
 
@@ -76,10 +75,9 @@ impl Deliberator {
     }
 
     /// Ingest a new signal into the pending bag.
-    fn ingest(&mut self, source: String, payload: String, at_ms: i64) {
+    fn ingest(&mut self, source: String, at_ms: i64) {
         self.pending.push(PendingSignal {
             source,
-            payload,
             at_secs: at_ms / 1000,
         });
     }
@@ -261,8 +259,8 @@ async fn run_deliberator(app: tauri::AppHandle) {
             }
             result = rx.recv() => {
                 match result {
-                    Ok(SunnyEvent::AutopilotSignal { source, payload, at, .. }) => {
-                        delib.ingest(source, payload, at);
+                    Ok(SunnyEvent::AutopilotSignal { source, at, .. }) => {
+                        delib.ingest(source, at);
                     }
                     Ok(_) => {
                         // Other event kinds are not consumed by the deliberator.
@@ -287,7 +285,6 @@ async fn run_deliberator(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     /// Minimal mock AppHandle — we can't construct a real Tauri AppHandle in
     /// unit tests, so we test the Deliberator internals directly without it.
@@ -296,7 +293,6 @@ mod tests {
     fn make_signal(source: &str, at_ms: i64) -> PendingSignal {
         PendingSignal {
             source: source.to_string(),
-            payload: "{}".to_string(),
             at_secs: at_ms / 1000,
         }
     }
@@ -305,7 +301,6 @@ mod tests {
     struct TestDelib {
         pending: Vec<PendingSignal>,
         recent_bag: Vec<BagEntry>,
-        routes: Arc<Mutex<Vec<(u8, f32)>>>, // (tier, score) routed
     }
 
     impl TestDelib {
@@ -313,7 +308,6 @@ mod tests {
             TestDelib {
                 pending: Vec::new(),
                 recent_bag: Vec::new(),
-                routes: Arc::new(Mutex::new(Vec::new())),
             }
         }
 

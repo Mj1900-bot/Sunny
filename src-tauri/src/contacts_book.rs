@@ -75,27 +75,6 @@ impl ContactIndex {
             .collect()
     }
 
-    /// Substring search by display name. Returns up to `limit` matches
-    /// as `(name, handles)` pairs, where `handles` is every phone/email
-    /// we've indexed for that person. Case-insensitive. Used by the
-    /// `contacts_lookup` agent tool to answer "what's Niksa's number".
-    pub fn search_by_name(&self, query: &str, limit: usize) -> Vec<(String, Vec<String>)> {
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Vec::new();
-        }
-        let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
-        for (handle, name) in &self.by_handle {
-            if name.to_lowercase().contains(&needle) {
-                by_name.entry(name.clone()).or_default().push(handle.clone());
-            }
-        }
-        let mut rows: Vec<(String, Vec<String>)> = by_name.into_iter().collect();
-        rows.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-        rows.truncate(limit);
-        rows
-    }
-
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.by_handle.len()

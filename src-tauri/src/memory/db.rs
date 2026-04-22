@@ -50,30 +50,6 @@ pub fn with_conn<T>(f: impl FnOnce(&Connection) -> Result<T, String>) -> Result<
     let guard = mu.lock().map_err(|_| "memory DB mutex poisoned".to_string())?;
     f(&*guard)
 }
-/// Test-injection overload: run a closure against a caller-supplied connection
-/// instead of the global singleton. This exists alongside `with_conn` so that:
-///
-///   1. Production code is unchanged — every existing call site keeps `with_conn`.
-///   2. Unit tests can pass a scratch connection opened in a temp dir, achieving
-///      full isolation without touching the `OnceLock` cell that the rest of the
-///      process shares.
-///
-/// The function is intentionally #[cfg(not(…))] free — keeping it in the
-/// production binary is harmless (zero overhead, unused in the hot path) and
-/// avoids a conditional compilation layer that would complicate imports.
-///
-/// Callers:
-/// ```rust
-/// let (_dir, conn) = scratch_conn("my-test");
-/// with_conn_in(&conn, |c| { /* SQL */ })?;
-/// ```
-pub fn with_conn_in<T>(
-    conn: &Connection,
-    f: impl FnOnce(&Connection) -> Result<T, String>,
-) -> Result<T, String> {
-    f(conn)
-}
-
 
 // ---------------------------------------------------------------------------
 // Reader connection pool
@@ -1269,7 +1245,6 @@ mod tests {
     #[test]
     fn reader_pool_parallel_selects_all_return_seed_row() {
         use std::sync::{Arc, Mutex};
-        use std::thread;
 
         // ── Build isolated DB with one seed row ──────────────────────────
         let dir = scratch_dir("reader-pool-integ");
