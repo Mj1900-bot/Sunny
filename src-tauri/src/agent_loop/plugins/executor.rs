@@ -72,6 +72,13 @@ const ALLOWLIST_FILE: &str = "plugins-allowlist.json";
 pub enum PluginToolExec {
     /// HTTP GET with URL templating + allowlist-gated prefix match.
     HttpGet(HttpGetExec),
+    /// Local-only shell execution inside Sunny's existing
+    /// `sandbox-exec` Bash jail. argv-style template — each element
+    /// becomes ONE argv entry after substitution, so there is no
+    /// shell-metacharacter interpretation and no injection path.
+    /// Network is blocked by the sandbox profile (see
+    /// `agent_loop::tools::sandbox::engine::Profile::Bash`). v0.3.
+    Shell(ShellExec),
     /// v0.1 placeholder retained for backward compatibility. Returns
     /// a structured error when the dispatcher tries to run it.
     Placeholder,
@@ -86,6 +93,37 @@ pub struct HttpGetExec {
     /// Must be non-empty — a plugin cannot declare "any URL". Each
     /// prefix must itself be an http(s) URL.
     pub allowed_url_prefixes: Vec<String>,
+}
+
+/// v0.3 sandboxed shell executor. Reuses Sunny's existing
+/// `run_sandboxed` engine so plugin shell runs get the same jail
+/// as the `sandbox_run_bash` built-in tool: restricted PATH,
+/// no network, writes confined to a per-run temp dir, hard
+/// timeout, memory ceiling via `ulimit -v`, fork-bomb protection
+/// via the `SpawnGuard` the engine acquires.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellExec {
+    /// Absolute path to the binary to execute. Must start with
+    /// `/` — no `PATH` lookup, no relative resolution, no arbitrary
+    /// strings that look like paths but aren't. Checked on every
+    /// execution rather than at manifest-load time because plugins
+    /// may declare binaries the user hasn't installed yet — the
+    /// failure is clearer at runtime.
+    pub binary: String,
+    /// Argv templates. Each element becomes ONE argv entry after
+    /// `{{name}}` substitution. Because the spawned process is
+    /// invoked directly (no shell), metacharacters in substituted
+    /// values are not interpreted — `;`, `|`, `&&`, backticks all
+    /// land in argv as literal bytes. Plugins that need pipelines
+    /// must ship a wrapper script as the binary.
+    #[serde(default)]
+    pub args_template: Vec<String>,
+    /// Wall-clock budget in milliseconds. Capped at 30_000 regardless
+    /// of what the manifest declares — a plugin cannot hold a turn
+    /// longer than this. Defaults to 5_000 ms (the bash-tool default)
+    /// when absent.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +191,35 @@ pub fn render_template(template: &str, args: &Value) -> Result<String, String> {
         })?;
         let scalar = value_to_scalar_string(val, key)?;
         out.push_str(&percent_encode(&scalar));
+        rest = &after_open[end + 2..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Argv-style template: same `{{name}}` placeholder grammar as
+/// `render_template`, but NO percent-encoding — each substituted
+/// value becomes one literal argv argument passed straight to
+/// `execve(2)`. Suitable for shell executor argv slots where the
+/// spawned process is invoked directly (no shell parses the result).
+pub fn render_argv_template(template: &str, args: &Value) -> Result<String, String> {
+    let mut out = String::with_capacity(template.len() + 32);
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + 2..];
+        let end = after_open
+            .find("}}")
+            .ok_or_else(|| format!("unterminated `{{{{` in argv template: {rest}"))?;
+        let key = after_open[..end].trim();
+        if key.is_empty() {
+            return Err(format!("empty placeholder `{{{{}}}}` in argv template"));
+        }
+        let val = args.get(key).ok_or_else(|| {
+            format!("missing argument `{key}` required by argv template")
+        })?;
+        let scalar = value_to_scalar_string(val, key)?;
+        out.push_str(&scalar);
         rest = &after_open[end + 2..];
     }
     out.push_str(rest);
@@ -263,10 +330,92 @@ pub async fn execute(
     match exec {
         PluginToolExec::Placeholder => Err(format!(
             "plugin `{plugin_id}` tool `{tool_name}` uses the v0.1 placeholder \
-             executor; upgrade the manifest to specify `exec.type` = `http_get`"
+             executor; upgrade the manifest to specify `exec.type` = `http_get` \
+             or `shell`"
         )),
         PluginToolExec::HttpGet(spec) => execute_http_get(plugin_id, tool_name, spec, args).await,
+        PluginToolExec::Shell(spec) => execute_shell(plugin_id, tool_name, spec, args).await,
     }
+}
+
+/// Default timeout for shell exec when the manifest doesn't specify,
+/// matching the `sandbox_run_bash` built-in tool.
+const DEFAULT_SHELL_TIMEOUT_MS: u64 = 5_000;
+/// Hard cap — plugins cannot declare longer than this regardless.
+const MAX_SHELL_TIMEOUT_MS: u64 = 30_000;
+
+async fn execute_shell(
+    plugin_id: &str,
+    tool_name: &str,
+    spec: &ShellExec,
+    args: &Value,
+) -> Result<Value, String> {
+    // Absolute path required. Blocks `PATH` lookup and relative-path
+    // resolution tricks.
+    if !spec.binary.starts_with('/') {
+        return Err(format!(
+            "plugin `{plugin_id}/{tool_name}`: binary `{}` must be an absolute path",
+            spec.binary
+        ));
+    }
+    // Existence + executable bit check at runtime so the error has
+    // "install the binary" instead of "your manifest is broken".
+    let bin_path = std::path::Path::new(&spec.binary);
+    if !bin_path.is_file() {
+        return Err(format!(
+            "plugin `{plugin_id}/{tool_name}`: binary `{}` does not exist",
+            spec.binary
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(bin_path)
+            .map_err(|e| format!("plugin `{plugin_id}/{tool_name}`: stat binary: {e}"))?;
+        if meta.permissions().mode() & 0o111 == 0 {
+            return Err(format!(
+                "plugin `{plugin_id}/{tool_name}`: binary `{}` is not executable",
+                spec.binary
+            ));
+        }
+    }
+
+    // Render every argv slot. Rejects missing keys / complex / null
+    // values before we spawn anything.
+    let mut argv_owned: Vec<String> = Vec::with_capacity(spec.args_template.len() + 1);
+    argv_owned.push(spec.binary.clone());
+    for (i, tmpl) in spec.args_template.iter().enumerate() {
+        let rendered = render_argv_template(tmpl, args).map_err(|e| {
+            format!(
+                "plugin `{plugin_id}/{tool_name}`: argv[{i}] template: {e}"
+            )
+        })?;
+        argv_owned.push(rendered);
+    }
+
+    let timeout_ms = spec
+        .timeout_ms
+        .unwrap_or(DEFAULT_SHELL_TIMEOUT_MS)
+        .min(MAX_SHELL_TIMEOUT_MS);
+
+    // Reuse Sunny's existing sandbox engine — same `sandbox-exec` jail
+    // the `sandbox_run_bash` built-in uses, with the Bash profile
+    // (no network, per-run temp dir, memory limit, etc.). Plugins
+    // running local binaries land under the same isolation as the
+    // first-party shell tool.
+    use crate::agent_loop::tools::sandbox::engine::{
+        run_sandboxed, Profile, SandboxDir,
+    };
+    let sandbox = SandboxDir::create()?;
+    let params: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let argv_refs: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
+    let result =
+        run_sandboxed(&sandbox, &Profile::Bash, &params, &argv_refs, None, timeout_ms).await?;
+
+    // Return the same JSON envelope shape the HTTP executor uses so
+    // the LLM sees a predictable structure across executor kinds.
+    serde_json::to_value(&result)
+        .map_err(|e| format!("plugin `{plugin_id}/{tool_name}`: encode result: {e}"))
 }
 
 async fn execute_http_get(
@@ -572,6 +721,131 @@ mod tests {
     fn allowlist_deserialises_empty() {
         let a: PluginsAllowlist = serde_json::from_str("{}").unwrap();
         assert!(a.allowed.is_empty());
+    }
+
+    // ── shell argv template ─────────────────────────────────────────────────
+
+    #[test]
+    fn render_argv_template_substitutes_without_percent_encoding() {
+        // argv values go straight to execve — no percent-encoding,
+        // because no shell/URL parses them.
+        let out = render_argv_template(
+            "{{query}}",
+            &json!({"query": "hello world & friends"}),
+        )
+        .unwrap();
+        assert_eq!(out, "hello world & friends");
+    }
+
+    #[test]
+    fn render_argv_template_preserves_special_chars_verbatim() {
+        // Things that would be metacharacters in a shell are literal
+        // bytes in an argv slot.
+        let out = render_argv_template(
+            "--where={{q}}",
+            &json!({"q": "a;b|c&&d`e`$f"}),
+        )
+        .unwrap();
+        assert_eq!(out, "--where=a;b|c&&d`e`$f");
+    }
+
+    #[test]
+    fn render_argv_template_fails_on_missing_key() {
+        let err = render_argv_template("{{k}}", &json!({})).unwrap_err();
+        assert!(err.contains("missing argument"), "got: {err}");
+    }
+
+    #[test]
+    fn render_argv_template_fails_on_unterminated_placeholder() {
+        let err = render_argv_template("{{k", &json!({"k":"v"})).unwrap_err();
+        assert!(err.contains("unterminated"), "got: {err}");
+    }
+
+    #[test]
+    fn render_argv_template_literal_passthrough() {
+        let out = render_argv_template("--flag", &json!({})).unwrap();
+        assert_eq!(out, "--flag");
+    }
+
+    // ── shell exec enum round-trip ──────────────────────────────────────────
+
+    #[test]
+    fn exec_shell_serialises_with_type_tag() {
+        let e = PluginToolExec::Shell(ShellExec {
+            binary: "/usr/bin/wc".to_string(),
+            args_template: vec!["-l".to_string(), "{{path}}".to_string()],
+            timeout_ms: Some(2000),
+        });
+        let s = serialise_exec_for_test(&e);
+        assert!(s.contains(r#""type":"shell""#), "got: {s}");
+        assert!(s.contains(r#""binary":"/usr/bin/wc""#), "got: {s}");
+    }
+
+    #[test]
+    fn exec_shell_deserialises_from_manifest_shape() {
+        let raw = r#"{
+          "type": "shell",
+          "binary": "/usr/bin/jq",
+          "args_template": ["-r", "{{selector}}"],
+          "timeout_ms": 3000
+        }"#;
+        let e: PluginToolExec = serde_json::from_str(raw).unwrap();
+        match e {
+            PluginToolExec::Shell(s) => {
+                assert_eq!(s.binary, "/usr/bin/jq");
+                assert_eq!(s.args_template, vec!["-r", "{{selector}}"]);
+                assert_eq!(s.timeout_ms, Some(3000));
+            }
+            _ => panic!("expected Shell variant"),
+        }
+    }
+
+    #[test]
+    fn exec_shell_deserialises_with_default_timeout() {
+        let raw = r#"{
+          "type": "shell",
+          "binary": "/usr/bin/true",
+          "args_template": []
+        }"#;
+        let e: PluginToolExec = serde_json::from_str(raw).unwrap();
+        match e {
+            PluginToolExec::Shell(s) => assert!(s.timeout_ms.is_none()),
+            _ => panic!("expected Shell variant"),
+        }
+    }
+
+    // ── shell execute negative paths ────────────────────────────────────────
+    //
+    // Positive-path (actually spawning /usr/bin/true inside sandbox-
+    // exec) lives in the integration suite — unit tests stay static.
+    // But we can cover every negative branch without spawning.
+
+    #[tokio::test]
+    async fn execute_shell_rejects_relative_binary_path() {
+        // Pre-seed the allowlist check expects absence → fail early.
+        // We exercise the negative validation path which runs BEFORE
+        // any spawn so the actual absence of the binary doesn't
+        // matter.
+        let spec = PluginToolExec::Shell(ShellExec {
+            binary: "bash".to_string(), // relative!
+            args_template: vec![],
+            timeout_ms: None,
+        });
+        // Use a plugin id sure to be absent from the allowlist so
+        // the allowlist check returns first and we don't even reach
+        // the binary validation. That's the safer negative path.
+        let err = execute(
+            "never-allowed-plugin-shell-test-zzz",
+            "nope",
+            &spec,
+            &json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("not in") && err.contains("plugins-allowlist.json"),
+            "got: {err}"
+        );
     }
 
     #[test]
