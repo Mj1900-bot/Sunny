@@ -36,6 +36,7 @@ pub mod providers;
 pub mod reflect;
 pub mod reflexion;
 pub mod scope;
+pub mod session_cache;
 pub mod session_lock;
 pub mod subagents;
 pub mod tool_output_wrap;

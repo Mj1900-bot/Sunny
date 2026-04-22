@@ -3,20 +3,25 @@
 use crate::memory;
 
 #[tauri::command]
-pub fn memory_fact_add(
+pub async fn memory_fact_add(
     subject: Option<String>,
     text: String,
     tags: Option<Vec<String>>,
     confidence: Option<f64>,
     source: Option<String>,
 ) -> Result<memory::SemanticFact, String> {
-    memory::semantic_add(
+    let fact = memory::semantic_add(
         subject.unwrap_or_default(),
         text,
         tags.unwrap_or_default(),
         confidence,
         source,
-    )
+    )?;
+    // UI-initiated write — we have no session_id, so conservatively
+    // invalidate every session's cached digest. Backend/model cache is
+    // untouched because those don't depend on memory state.
+    crate::agent_loop::session_cache::invalidate_all_digests().await;
+    Ok(fact)
 }
 
 #[tauri::command]

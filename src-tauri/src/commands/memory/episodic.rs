@@ -3,7 +3,7 @@
 use crate::memory;
 
 #[tauri::command]
-pub fn memory_episodic_add(
+pub async fn memory_episodic_add(
     kind: Option<String>,
     text: String,
     tags: Option<Vec<String>>,
@@ -17,12 +17,24 @@ pub fn memory_episodic_add(
         "reflection" => memory::EpisodicKind::Reflection,
         _ => memory::EpisodicKind::Note,
     };
-    memory::episodic_add(
+    // Only Note / Reflection writes change the digest shape. User /
+    // Perception / ToolCall rows feed breadcrumbs that the digest
+    // builder deliberately filters out, so skipping their invalidation
+    // preserves cache hits on the hot voice-turn path.
+    let invalidate = matches!(
+        k,
+        memory::EpisodicKind::Note | memory::EpisodicKind::Reflection
+    );
+    let item = memory::episodic_add(
         k,
         text,
         tags.unwrap_or_default(),
         meta.unwrap_or(serde_json::Value::Null),
-    )
+    )?;
+    if invalidate {
+        crate::agent_loop::session_cache::invalidate_all_digests().await;
+    }
+    Ok(item)
 }
 
 #[tauri::command]

@@ -529,8 +529,28 @@ async fn prepare_context(
         req.message.len(), req.history.len(),
     );
 
-    let backend = pick_backend(&req).await?;
-    let model = pick_model(&req, backend).await;
+    // Main agents read through the session cache so the keychain probes
+    // in `pick_backend` and the 2000 ms Ollama HTTP probe in `pick_model`
+    // run once per session instead of once per turn. Sub-agents bypass
+    // the cache entirely to avoid leaking routing decisions between
+    // parent and child (see `session_cache` module docs for rationale).
+    let (backend, model) = if sub_id.is_none() {
+        if let Some(sid) = req.session_id.as_deref() {
+            let b = super::session_cache::get_backend_or_compute(sid, || pick_backend(&req)).await?;
+            let m = super::session_cache::get_model_or_compute(sid, b, || pick_model(&req, b)).await;
+            (b, m)
+        } else {
+            // Legacy main-agent caller with no session_id — nothing to key
+            // the cache on, fall through to the direct path.
+            let b = pick_backend(&req).await?;
+            let m = pick_model(&req, b).await;
+            (b, m)
+        }
+    } else {
+        let b = pick_backend(&req).await?;
+        let m = pick_model(&req, b).await;
+        (b, m)
+    };
 
     log::info!(
         "agent_run_inner: picked backend={:?} model={} (t+{}ms)",
@@ -550,8 +570,21 @@ async fn prepare_context(
     // inherit their context from the parent so they skip this.
     let needs_name_prompt = sub_id.is_none() && seed_user_profile_if_empty().await;
 
+    // Digest is cached per session for main agents — sub-agents always
+    // rebuild since their goal shape is different from the parent's.
     let digest_started = Instant::now();
-    let memory_digest = build_memory_digest(&req.message, &req.history).await;
+    let memory_digest = if sub_id.is_none() {
+        if let Some(sid) = req.session_id.as_deref() {
+            super::session_cache::get_digest_or_compute(sid, || {
+                build_memory_digest(&req.message, &req.history)
+            })
+            .await
+        } else {
+            build_memory_digest(&req.message, &req.history).await
+        }
+    } else {
+        build_memory_digest(&req.message, &req.history).await
+    };
     log::info!(
         "agent_run_inner: memory digest in {}ms (len={})",
         digest_started.elapsed().as_millis(),
@@ -1118,7 +1151,7 @@ async fn complete_main_turn(ctx: &LoopCtx, final_text: String) -> Result<String,
     // operate on delegated tasks and shouldn't pollute the semantic
     // store.
     if ctx.is_main() {
-        auto_remember_from_user(&ctx.req.message).await;
+        auto_remember_from_user(&ctx.req.message, ctx.req.session_id.as_deref()).await;
     }
 
     write_run_episodic(&ctx.req.message, &ctx.tool_names_collected, "done");
