@@ -110,6 +110,52 @@ pub fn catalog_merged() -> Vec<ToolSpec> {
         .collect()
 }
 
+/// Return the memoised OpenAI-chat-completions-shaped tool array that
+/// GLM, Kimi, Ollama, and OpenClaw all send on every request:
+///
+/// ```json
+/// [
+///   {
+///     "type": "function",
+///     "function": { "name": "...", "description": "...", "parameters": {...} }
+///   },
+///   ...
+/// ]
+/// ```
+///
+/// The trait-registered catalog is static after `inventory::submit!`
+/// link-time registration, so the parsed schema values never change.
+/// Callers `.clone()` the returned Vec per request — a deep clone of
+/// ~20 small Value trees is still 5-10× cheaper than re-parsing each
+/// `input_schema` JSON-string literal via `serde_json::from_str` on
+/// every turn.
+///
+/// Anthropic uses a different shape (adds `cache_control` on the last
+/// entry) — see `providers::anthropic::anthropic_tools_catalog`.
+pub fn openai_chat_tools_catalog() -> &'static Vec<serde_json::Value> {
+    use serde_json::{json, Value};
+    use std::sync::OnceLock;
+
+    static CACHED: OnceLock<Vec<Value>> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        catalog_merged()
+            .iter()
+            .map(|t| {
+                let schema: Value = serde_json::from_str(t.input_schema)
+                    .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": schema,
+                    }
+                })
+            })
+            .collect()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -148,5 +194,47 @@ mod tests {
         assert!(!is_voice_unsafe("schedule_recurring"));
         assert!(!is_voice_unsafe("calendar_list_events"));
         assert!(!is_voice_unsafe("unknown_tool_name"));
+    }
+
+    /// The OpenAI-chat-shaped catalog returns the same `&'static Vec`
+    /// on repeat calls — the whole point is to avoid re-parsing every
+    /// turn across GLM, Kimi, Ollama, and OpenClaw.
+    #[test]
+    fn openai_chat_tools_catalog_is_memoised() {
+        let a = openai_chat_tools_catalog();
+        let b = openai_chat_tools_catalog();
+        assert!(
+            std::ptr::eq(a, b),
+            "memoised catalog must return the same static reference"
+        );
+    }
+
+    /// Every entry must carry the OpenAI-chat shape used by every
+    /// non-Anthropic provider: `{type: "function", function: {name,
+    /// description, parameters}}`. A refactor that drops one of those
+    /// fields would break tool-use across four providers simultaneously.
+    #[test]
+    fn openai_chat_tools_carry_required_fields() {
+        let tools = openai_chat_tools_catalog();
+        assert!(!tools.is_empty(), "catalog must not be empty");
+        for (i, t) in tools.iter().enumerate() {
+            assert_eq!(
+                t["type"], "function",
+                "tool #{i} must have type=\"function\""
+            );
+            let f = &t["function"];
+            assert!(
+                f["name"].is_string(),
+                "tool #{i} function.name must be a string"
+            );
+            assert!(
+                f["description"].is_string(),
+                "tool #{i} function.description must be a string"
+            );
+            assert!(
+                f["parameters"].is_object(),
+                "tool #{i} function.parameters must be an object"
+            );
+        }
     }
 }

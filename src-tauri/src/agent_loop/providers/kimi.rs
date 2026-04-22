@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-use super::super::catalog::catalog_merged;
+use super::super::catalog::openai_chat_tools_catalog;
 use super::super::types::{ToolCall, TurnOutcome};
 use super::super::helpers::truncate;
 use super::anthropic::{LLM_TIMEOUT_SECS, USER_AGENT};
@@ -121,21 +121,7 @@ pub async fn kimi_turn(model: &str, system: &str, history: &[Value]) -> Result<T
         messages.push(scrub_message_value(m));
     }
 
-    let tools: Vec<Value> = catalog_merged()
-        .iter()
-        .map(|t| {
-            let schema: Value = serde_json::from_str(t.input_schema)
-                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": schema,
-                }
-            })
-        })
-        .collect();
+    let tools = openai_chat_tools_catalog().clone();
 
     // K2.6 quirks (as of 2026-04-20 launch):
     //   * temperature is locked to 1.0 — Moonshot rejects any other
@@ -336,21 +322,7 @@ pub async fn kimi_turn_streaming(
         messages.push(scrub_message_value(m));
     }
 
-    let tools: Vec<Value> = catalog_merged()
-        .iter()
-        .map(|t| {
-            let schema: Value = serde_json::from_str(t.input_schema)
-                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": schema,
-                }
-            })
-        })
-        .collect();
+    let tools = openai_chat_tools_catalog().clone();
 
     // K2.6 quirks: temperature locked to 1, max_tokens capped at 2048
     // — see the non-streaming `kimi_turn` for the full rationale.

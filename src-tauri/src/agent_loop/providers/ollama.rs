@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
-use super::super::catalog::catalog_merged;
+use super::super::catalog::openai_chat_tools_catalog;
 use super::super::types::{ToolCall, TurnOutcome};
 use super::super::helpers::truncate;
 use super::anthropic::LLM_TIMEOUT_SECS; // Re-use the timeout constant
@@ -122,21 +122,7 @@ pub async fn ollama_turn(
         messages.push(m.clone());
     }
 
-    let tools: Vec<Value> = catalog_merged()
-        .iter()
-        .map(|t| {
-            let schema: Value = serde_json::from_str(t.input_schema)
-                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": schema,
-                }
-            })
-        })
-        .collect();
+    let tools = openai_chat_tools_catalog().clone();
 
     let body = json!({
         "model": model,
@@ -270,7 +256,7 @@ pub async fn ollama_turn_streaming(
     // request non-streaming. Skip the double-request: when the tool catalog
     // is non-empty (which it always is in the agent loop), delegate directly
     // to the buffered ollama_turn which handles tool_calls correctly in one pass.
-    let has_tools = !catalog_merged().is_empty();
+    let has_tools = !openai_chat_tools_catalog().is_empty();
     if has_tools {
         log::debug!(
             "ollama_turn_streaming: tools non-empty — skipping streaming, delegating to ollama_turn"
@@ -284,21 +270,7 @@ pub async fn ollama_turn_streaming(
         messages.push(m.clone());
     }
 
-    let tools: Vec<Value> = catalog_merged()
-        .iter()
-        .map(|t| {
-            let schema: Value = serde_json::from_str(t.input_schema)
-                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": schema,
-                }
-            })
-        })
-        .collect();
+    let tools = openai_chat_tools_catalog().clone();
 
     let body = json!({
         "model": model,

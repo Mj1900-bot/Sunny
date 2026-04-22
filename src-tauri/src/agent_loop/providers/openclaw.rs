@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::super::catalog::catalog_merged;
+use super::super::catalog::openai_chat_tools_catalog;
 use super::super::helpers::truncate;
 use super::super::types::{ToolCall, TurnOutcome};
 use super::anthropic::USER_AGENT;
@@ -173,22 +173,8 @@ pub async fn openclaw_turn(
         messages.push(scrub_message_value(m));
     }
 
-    // Build tool definitions from Sunny's merged catalog.
-    let tools: Vec<Value> = catalog_merged()
-        .iter()
-        .map(|t| {
-            let schema: Value = serde_json::from_str(t.input_schema)
-                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": schema,
-                }
-            })
-        })
-        .collect();
+    // Build tool definitions from Sunny's shared memoised catalog.
+    let tools = openai_chat_tools_catalog().clone();
 
     let body = json!({
         "model": OPENCLAW_MODEL_PASSTHROUGH,
