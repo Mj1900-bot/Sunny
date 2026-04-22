@@ -18,18 +18,33 @@
  * All JSON parsing is guarded so malformed input can never throw.
  */
 
-function tryParseEnvelope(s: string): { text: string } | null {
+/**
+ * Result shape from tryParseEnvelope:
+ *   - action === 'answer' → text is the human-visible answer (may be empty)
+ *   - action === 'tool' / anything else → text is '' (the envelope is a
+ *     machine-only action intent that should NOT be read aloud or shown
+ *     in the transcript)
+ */
+function tryParseEnvelope(s: string): { action: string; text: string } | null {
   try {
     const p: unknown = JSON.parse(s);
     if (
-      p !== null &&
-      typeof p === 'object' &&
-      !Array.isArray(p) &&
-      typeof (p as Record<string, unknown>).action === 'string' &&
-      typeof (p as Record<string, unknown>).text === 'string'
-    ) {
-      return { text: (p as Record<string, unknown>).text as string };
+      p === null ||
+      typeof p !== 'object' ||
+      Array.isArray(p) ||
+      typeof (p as Record<string, unknown>).action !== 'string'
+    ) return null;
+    const o = p as Record<string, unknown>;
+    const action = o.action as string;
+    // Answer envelopes carry the human text in `.text`.
+    if (action === 'answer' && typeof o.text === 'string') {
+      return { action, text: o.text };
     }
+    // Tool / other action envelopes (e.g. {"action":"tool","tool":"app_launch",…})
+    // are AGENT-INTERNAL intents. The agent loop dispatches the tool call
+    // directly; the raw JSON should never reach the UI transcript or TTS.
+    // Return empty string so display + speak both skip it.
+    return { action, text: '' };
   } catch {
     /* fall through */
   }

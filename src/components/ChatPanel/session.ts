@@ -94,14 +94,19 @@ function parseEnvelope(s: string): { text: string } | null {
   try {
     const p: unknown = JSON.parse(s);
     if (
-      p !== null &&
-      typeof p === 'object' &&
-      !Array.isArray(p) &&
-      typeof (p as Record<string, unknown>).action === 'string' &&
-      typeof (p as Record<string, unknown>).text === 'string'
-    ) {
-      return { text: (p as Record<string, unknown>).text as string };
+      p === null ||
+      typeof p !== 'object' ||
+      Array.isArray(p) ||
+      typeof (p as Record<string, unknown>).action !== 'string'
+    ) return null;
+    const o = p as Record<string, unknown>;
+    // Only 'answer' envelopes carry human text. Tool / other action
+    // envelopes are agent-internal — return empty string so the
+    // display + TTS skip them rather than reading raw JSON aloud.
+    if (o.action === 'answer' && typeof o.text === 'string') {
+      return { text: o.text };
     }
+    return { text: '' };
   } catch {
     /* fall through */
   }
