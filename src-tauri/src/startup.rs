@@ -61,6 +61,18 @@ pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     // Persistent event spine — publish-only; subscribers hook in via event_bus::subscribe.
     if let Err(e) = event_bus::init() { log::warn!("event_bus init failed: {e}"); }
 
+    // Warm the session cache for the canonical "main" session in the
+    // background. Pre-computes pick_backend (keychain probes, ~50-150
+    // ms) and pick_model (which fires a 2000 ms Ollama HTTP probe on
+    // the Ollama backend) so the user's first real turn hits a
+    // populated cache instead of paying those costs on the critical
+    // path. Fire-and-forget: errors are logged and swallowed by the
+    // warm helper. Subagents and pinned-provider sessions bypass the
+    // cache entirely, so mis-warm is never a correctness concern.
+    tokio::spawn(async {
+        crate::agent_loop::core::warm_main_session_cache().await;
+    });
+
     // Hook 1: Autopilot proactive daemon — T0/T1 tier (silent log + HUD pulse).
     // T2+ voice surfaces remain gated by deliberator::AUTOPILOT_SPEAK_ENABLED (false).
     // Enabled by default; opt-out via SUNNY_AUTOPILOT_ENABLED=false.

@@ -1688,6 +1688,55 @@ async fn pick_model(req: &ChatRequest, backend: Backend) -> String {
     }
 }
 
+/// Warm the session_cache for the canonical `"main"` session so the
+/// user's first real turn hits a populated cache instead of paying the
+/// ~50-150 ms keychain probe + potential 2000 ms Ollama HTTP probe on
+/// the critical path.
+///
+/// Called from `startup::setup` as a detached `tokio::spawn` — errors
+/// are logged and swallowed. The synthetic ChatRequest uses empty
+/// fields and `provider = None`, so the heuristic router populates the
+/// cache in the same shape a no-override user turn would. If the user
+/// has an explicit provider pinned in Settings, their first real turn
+/// bypasses the cache anyway (see the `is_heuristic_route` gate in
+/// `prepare_context`), so there's no mismatch risk.
+pub(crate) async fn warm_main_session_cache() {
+    let started = Instant::now();
+    let req = ChatRequest {
+        message: String::new(),
+        model: None,
+        provider: None,
+        history: Vec::new(),
+        session_id: Some("main".to_string()),
+        chat_mode: None,
+    };
+    let sid = "main";
+    match super::session_cache::get_backend_or_compute(sid, || pick_backend(&req)).await {
+        Ok(backend) => {
+            let model = super::session_cache::get_model_or_compute(
+                sid,
+                backend,
+                || pick_model(&req, backend),
+            )
+            .await;
+            log::info!(
+                "warm_main_session_cache: populated backend={:?} model={} in {}ms",
+                backend,
+                model,
+                started.elapsed().as_millis(),
+            );
+        }
+        Err(e) => {
+            // Non-fatal — first real turn will recompute. Usually
+            // means no API keys are configured yet.
+            log::info!(
+                "warm_main_session_cache: skipped ({e}) after {}ms",
+                started.elapsed().as_millis(),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
