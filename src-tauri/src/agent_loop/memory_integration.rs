@@ -225,56 +225,59 @@ pub async fn auto_remember_from_user(message: &str) {
 /// cap are dropped from the tail backwards so the most recent turn always
 /// survives.
 fn build_recent_conversation_block(history: &[ChatMessage]) -> Option<String> {
-    // Filter to the conversational roles only — system messages are
-    // already handled upstream by `compose_system_prompt`, and any
-    // unknown role gets coerced to "user" at render time by
-    // `message_to_value`, but here we want a clean user/assistant view.
-    let filtered: Vec<(&str, &str)> = history
-        .iter()
-        .filter(|m| !m.role.eq_ignore_ascii_case("system"))
-        .filter_map(|m| {
-            let role = match m.role.to_ascii_lowercase().as_str() {
-                "assistant" => "assistant",
-                _ => "user",
-            };
-            let trimmed = m.content.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some((role, trimmed))
-            }
-        })
-        .collect();
+    // Single pass over `history` with a bounded window — we render at
+    // most 6 trailing user/assistant messages (3 pairs), so we never
+    // need to hold more than 6 entries in memory regardless of how
+    // long the full history is. Also tracks the total conversational
+    // count so the "(N earlier turns)" summary can be produced without
+    // a second walk. System rows and whitespace-only content are
+    // filtered out here to match the upstream contract (system is
+    // already handled by `compose_system_prompt`; empty content would
+    // render as a lonely bullet).
+    use std::collections::VecDeque;
+    const WINDOW: usize = 6;
+    let mut window: VecDeque<(&str, &str)> = VecDeque::with_capacity(WINDOW);
+    let mut total_conv_rows: usize = 0;
+    for m in history {
+        if m.role.eq_ignore_ascii_case("system") {
+            continue;
+        }
+        let trimmed = m.content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let role = match m.role.to_ascii_lowercase().as_str() {
+            "assistant" => "assistant",
+            _ => "user",
+        };
+        if window.len() == WINDOW {
+            window.pop_front();
+        }
+        window.push_back((role, trimmed));
+        total_conv_rows += 1;
+    }
 
-    if filtered.is_empty() {
+    if window.is_empty() {
         return None;
     }
 
-    // Short-history path: render every message verbatim-ish (with a
-    // per-message truncation rail). No summary line needed — six or
-    // fewer messages fit comfortably under the total-char cap.
     let mut lines: Vec<String> = Vec::new();
     lines.push("Recent conversation:".to_string());
 
-    let use_last_three_pairs = filtered.len() >= 6;
-
-    if use_last_three_pairs {
-        // Last 3 user/assistant pairs = up to 6 messages from the end.
-        // Walk from the tail and keep at most 6 indices.
-        let take = 6.min(filtered.len());
-        let skipped = filtered.len() - take;
+    // Only emit the summary line when we actually dropped messages.
+    // Matches the previous threshold — the summary appears iff the
+    // conversation had at least 6 conversational rows AND we kept the
+    // trailing window of 6.
+    let use_summary = total_conv_rows >= WINDOW;
+    if use_summary {
+        let skipped = total_conv_rows - window.len();
         if skipped > 0 {
             lines.push(format!("({} earlier turns)", skipped));
         }
-        for (role, content) in &filtered[filtered.len() - take..] {
-            let label = if *role == "assistant" { "SUNNY" } else { "Sunny" };
-            lines.push(format!("- {}: {}", label, truncate(content, RECENT_CONVO_PER_MSG_CHARS)));
-        }
-    } else {
-        for (role, content) in &filtered {
-            let label = if *role == "assistant" { "SUNNY" } else { "Sunny" };
-            lines.push(format!("- {}: {}", label, truncate(content, RECENT_CONVO_PER_MSG_CHARS)));
-        }
+    }
+    for (role, content) in &window {
+        let label = if *role == "assistant" { "SUNNY" } else { "Sunny" };
+        lines.push(format!("- {}: {}", label, truncate(content, RECENT_CONVO_PER_MSG_CHARS)));
     }
 
     // Outer-cap enforcement: drop the OLDEST rendered messages (just
@@ -282,7 +285,7 @@ fn build_recent_conversation_block(history: &[ChatMessage]) -> Option<String> {
     // the header on line 0 and the optional "(N earlier turns)" line
     // on line 1 so the summary survives even if we need to drop
     // individual message lines to fit.
-    let header_rows = if use_last_three_pairs && !lines.is_empty() { 2 } else { 1 };
+    let header_rows = if use_summary { 2 } else { 1 };
     let mut total: usize = lines.iter().map(|l| l.chars().count() + 1).sum();
     while total > RECENT_CONVO_MAX_CHARS && lines.len() > header_rows + 1 {
         // Remove the first message line (index == header_rows).
@@ -793,6 +796,32 @@ mod tests {
             assert!(!block.contains(&format!("question {i}")), "leaked q{i}");
             assert!(!block.contains(&format!("answer {i}")), "leaked a{i}");
         }
+    }
+
+    /// Very-long history stresses the bounded-window iteration: 500
+    /// turns = 1000 messages, but we must still keep only the last 6
+    /// and emit a "(994 earlier turns)" summary. No unbounded allocation
+    /// is observable at this API surface, but this test guards against
+    /// a regression that accidentally reintroduces the full-history Vec
+    /// — the summary count would reveal it.
+    #[test]
+    fn recent_convo_very_long_history_bounded_window() {
+        let mut history: Vec<ChatMessage> = Vec::new();
+        for i in 0..500 {
+            history.push(msg("user", &format!("q{i}")));
+            history.push(msg("assistant", &format!("a{i}")));
+        }
+        let block = build_recent_conversation_block(&history).expect("some block");
+        // 1000 total conversational rows, 6 kept → 994 summarised.
+        assert!(
+            block.contains("(994 earlier turns)"),
+            "summary must reflect bounded window; got:\n{block}"
+        );
+        // Only the last 3 pairs (indices 497..=499) should appear.
+        assert!(block.contains("q497"), "q497 must be present");
+        assert!(block.contains("a499"), "a499 must be present");
+        assert!(!block.contains("q100"), "q100 must be dropped");
+        assert!(!block.contains("a0"), "a0 must be dropped");
     }
 
     #[test]
