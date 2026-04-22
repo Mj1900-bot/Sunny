@@ -588,21 +588,15 @@ async fn prepare_context(
             sub_id.is_none() && seed_user_profile_if_empty().await
         },
         async {
-            // Digest is cached per session for main agents — sub-agents
-            // always rebuild since their goal shape differs from the
-            // parent's.
-            if sub_id.is_none() {
-                if let Some(sid) = req.session_id.as_deref() {
-                    super::session_cache::get_digest_or_compute(sid, || {
-                        build_memory_digest(&req.message, &req.history)
-                    })
-                    .await
-                } else {
-                    build_memory_digest(&req.message, &req.history).await
-                }
-            } else {
-                build_memory_digest(&req.message, &req.history).await
-            }
+            // Digest is rebuilt every turn. A previous iteration cached
+            // it per-session, but the digest embeds live world state
+            // (focus / activity / battery / next event), a recent-
+            // conversation block keyed on `history`, and semantic FTS
+            // results weighted by the current `goal` — all of which
+            // legitimately change turn-to-turn. The build is FTS-only
+            // and typically completes in single-digit ms; the 500 ms
+            // timeout in `build_memory_digest` bounds the worst case.
+            build_memory_digest(&req.message, &req.history).await
         },
     );
     log::info!(
@@ -1194,11 +1188,7 @@ async fn complete_main_turn(ctx: &LoopCtx, final_text: String) -> Result<String,
                 // persist any first-person fact. Invalidates the
                 // session digest cache on successful writes so the
                 // next turn sees the new bullet.
-                auto_remember_from_user(
-                    &ctx.req.message,
-                    ctx.req.session_id.as_deref(),
-                )
-                .await;
+                auto_remember_from_user(&ctx.req.message).await;
             },
             async {
                 // Persist the user turn + assistant answer under
@@ -1247,13 +1237,12 @@ async fn complete_main_turn(ctx: &LoopCtx, final_text: String) -> Result<String,
         let s = super::session_cache::snapshot();
         log::info!(
             "turn_done: total={}ms depth={} tools={} \
-             cache(b={}/{} m={}/{} d={}/{}) task_class={:?}",
+             cache(b={}/{} m={}/{}) task_class={:?}",
             ctx.started.elapsed().as_millis(),
             ctx.depth,
             ctx.tool_names_collected.len(),
             s.backend_hits, s.backend_misses,
             s.model_hits, s.model_misses,
-            s.digest_hits, s.digest_misses,
             ctx.task_class,
         );
     }

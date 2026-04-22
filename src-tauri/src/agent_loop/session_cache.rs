@@ -1,6 +1,6 @@
 //! # Session-scoped cache for expensive per-turn decisions.
 //!
-//! Three decisions were being re-run on every single turn of the ReAct
+//! Two decisions were being re-run on every single turn of the ReAct
 //! loop even though their answers don't change turn-to-turn within a
 //! session:
 //!
@@ -9,13 +9,18 @@
 //! 2. **`pick_model`** — for the Ollama backend this fires an HTTP probe
 //!    to `http://localhost:11434/api/tags` with a 2000 ms timeout. On a
 //!    warm session that's 2000 ms of pure waste every single turn.
-//! 3. **`build_memory_digest`** — reads the semantic store + recent
-//!    episodic rows and renders a bullet list. Up to ~500 ms on a
-//!    populated vault.
 //!
-//! This module caches those three results per `session_id`. Main-agent
+//! This module caches those two results per `session_id`. Main-agent
 //! turns read through the cache; the first turn pays the compute, every
 //! subsequent turn returns the cached value in microseconds.
+//!
+//! `build_memory_digest` was cached here in an earlier iteration but
+//! removed because the digest embeds live world state (focus / activity
+//! / battery), a history-keyed recent-conversation block, and
+//! goal-weighted semantic FTS results — all of which legitimately
+//! change turn-to-turn. The build is FTS-only (~5-10 ms typical,
+//! 500 ms timeout-bounded worst case) so running it every turn is
+//! cheap enough that correctness wins.
 //!
 //! ## Sub-agent safety
 //!
@@ -23,11 +28,10 @@
 //! this cache. Two reasons:
 //!
 //! * A sub-agent's `session_id` may equal the parent's (the main-agent
-//!   session is threaded into `spawn_subagent` so `memory_write` tools
-//!   can invalidate the right entry). Sharing the backend/model/digest
-//!   through the cache would leak the parent's routing decisions into
-//!   a child that was explicitly asked to use a different model
-//!   (`CRITIC_MODEL`, research-tier, etc.).
+//!   session is threaded into `spawn_subagent`). Sharing the backend
+//!   and model through the cache would leak the parent's routing
+//!   decisions into a child that was explicitly asked to use a
+//!   different model (`CRITIC_MODEL`, research-tier, etc.).
 //! * Even when the ids differ, a sub-agent's compute is short-lived;
 //!   caching it risks pinning a stale value past the sub-agent's exit.
 //!
@@ -40,14 +44,6 @@
 //! "forget everything" style commands). Their inputs — `ChatRequest.
 //! provider`, `ChatRequest.model`, and the keychain state — are stable
 //! across a session.
-//!
-//! The memory digest is invalidated whenever a write lands in semantic
-//! or episodic (`Note`/`Reflection` kind) storage. Write sites call
-//! `invalidate_digest` (per-session) or `invalidate_all_digests`
-//! (for UI-initiated writes that have no session_id). We do NOT
-//! invalidate on conversation appends, perception events, tool-call
-//! breadcrumbs, continuity upserts, or OCR notes — those don't feed
-//! the digest shape.
 //!
 //! ## Memory bounds
 //!
@@ -74,8 +70,6 @@ static BACKEND_HITS: AtomicU64 = AtomicU64::new(0);
 static BACKEND_MISSES: AtomicU64 = AtomicU64::new(0);
 static MODEL_HITS: AtomicU64 = AtomicU64::new(0);
 static MODEL_MISSES: AtomicU64 = AtomicU64::new(0);
-static DIGEST_HITS: AtomicU64 = AtomicU64::new(0);
-static DIGEST_MISSES: AtomicU64 = AtomicU64::new(0);
 
 /// Cumulative cache hit/miss counts since process start. Read at turn
 /// end in `complete_main_turn` for the latency telemetry log line —
@@ -86,35 +80,33 @@ pub struct CacheStats {
     pub backend_misses: u64,
     pub model_hits: u64,
     pub model_misses: u64,
-    pub digest_hits: u64,
-    pub digest_misses: u64,
 }
 
-/// Snapshot of the cumulative counters. Cheap (six atomic loads).
+/// Snapshot of the cumulative counters. Cheap (four atomic loads).
 pub fn snapshot() -> CacheStats {
     CacheStats {
         backend_hits: BACKEND_HITS.load(Ordering::Relaxed),
         backend_misses: BACKEND_MISSES.load(Ordering::Relaxed),
         model_hits: MODEL_HITS.load(Ordering::Relaxed),
         model_misses: MODEL_MISSES.load(Ordering::Relaxed),
-        digest_hits: DIGEST_HITS.load(Ordering::Relaxed),
-        digest_misses: DIGEST_MISSES.load(Ordering::Relaxed),
     }
 }
 
-/// Per-session cached decisions. All fields `None` means "never
-/// computed for this session yet".
+/// Per-session cached decisions. Backend + model are session-stable:
+/// the same `ChatRequest.provider` and the same keychain state
+/// produce the same answer every turn within a session, so we can
+/// safely cache across the whole session lifetime.
 ///
-/// `digest_version` doubles as the "digest was ever computed" sentinel
-/// so we can cache a `None` result without re-running the compute on
-/// every subsequent turn. It is reset to `0` on invalidation so the
-/// next `get_digest_or_compute` call sees a miss.
+/// The memory digest is NOT cached here even though a prior iteration
+/// did so — it embeds live world state (focus / activity / battery /
+/// next event), a history-keyed recent-conversation block, and
+/// goal-weighted semantic FTS results, all of which legitimately
+/// change turn-to-turn. Rebuilding per turn (~5-10 ms typical,
+/// 500 ms timeout-bounded worst case) is the price of freshness.
 #[derive(Debug, Default)]
 pub struct SessionCache {
     pub backend: Option<Backend>,
     pub model: Option<String>,
-    pub digest: Option<String>,
-    pub digest_version: u32,
 }
 
 /// Map of `session_id -> Arc<Mutex<SessionCache>>`.
@@ -214,80 +206,14 @@ where
     model
 }
 
-/// Return the cached memory digest for `session_id`, or compute-and-
-/// cache. `None` is a valid cached value (no digest material) — we do
-/// NOT recompute on subsequent calls.
-///
-/// The sentinel for "never computed" is `digest_version == 0`.
-/// After the first compute the version is `>= 1` regardless of whether
-/// the digest itself was `Some` or `None`.
-pub async fn get_digest_or_compute<F, Fut>(
-    session_id: &str,
-    compute: F,
-) -> Option<String>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Option<String>>,
-{
-    let cell = get_or_init(session_id);
-    let mut guard = cell.lock().await;
-
-    if guard.digest_version > 0 {
-        DIGEST_HITS.fetch_add(1, Ordering::Relaxed);
-        return guard.digest.clone();
-    }
-    DIGEST_MISSES.fetch_add(1, Ordering::Relaxed);
-
-    let digest = compute().await;
-    guard.digest = digest.clone();
-    guard.digest_version = guard.digest_version.saturating_add(1).max(1);
-    digest
-}
-
-/// Invalidate the cached digest for one session. Called after any
-/// semantic/note write that could plausibly change the next digest.
-///
-/// Cheap — takes the inner mutex, clears the digest, and resets the
-/// version so the next `get_digest_or_compute` recomputes.
-pub async fn invalidate_digest(session_id: &str) {
-    let cell = get_or_init(session_id);
-    let mut guard = cell.lock().await;
-    guard.digest = None;
-    guard.digest_version = 0;
-}
-
-/// Invalidate cached digests across ALL sessions. Used by UI-initiated
-/// writes (Tauri commands from the memory panel) that have no session
-/// context — we don't know which session's digest the user's next turn
-/// will draw from, so we conservatively clear everything.
-///
-/// The backend/model cache is NOT cleared — those don't depend on
-/// memory state. This keeps the 2000 ms Ollama probe win intact even
-/// after a UI edit.
-pub async fn invalidate_all_digests() {
-    let cells: Vec<Arc<Mutex<SessionCache>>> = {
-        let map = SESSION_CACHES
-            .lock()
-            .expect("SESSION_CACHES poisoned");
-        map.values().cloned().collect()
-    };
-    for cell in cells {
-        let mut guard = cell.lock().await;
-        guard.digest = None;
-        guard.digest_version = 0;
-    }
-}
-
 /// Blow away every cached field for `session_id`. Used by "forget
 /// everything" style commands — a fresh turn will re-run backend
-/// routing, model pick, and digest build from scratch.
+/// routing and model pick from scratch.
 pub async fn invalidate_all(session_id: &str) {
     let cell = get_or_init(session_id);
     let mut guard = cell.lock().await;
     guard.backend = None;
     guard.model = None;
-    guard.digest = None;
-    guard.digest_version = 0;
 }
 
 #[cfg(test)]
@@ -324,57 +250,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn digest_none_is_cached() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let sid = "test-digest-none";
-        invalidate_all(sid).await;
-
-        let c1 = calls.clone();
-        let d1 = get_digest_or_compute(sid, || async move {
-            c1.fetch_add(1, Ordering::SeqCst);
-            Option::<String>::None
-        })
-        .await;
-
-        let c2 = calls.clone();
-        let d2 = get_digest_or_compute(sid, || async move {
-            c2.fetch_add(1, Ordering::SeqCst);
-            Some("should-not-be-used".to_string())
-        })
-        .await;
-
-        assert!(d1.is_none());
-        assert!(d2.is_none(), "cached None must win — no recompute");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn invalidate_digest_forces_recompute() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let sid = "test-digest-invalidate";
-        invalidate_all(sid).await;
-
-        let c1 = calls.clone();
-        let _ = get_digest_or_compute(sid, || async move {
-            c1.fetch_add(1, Ordering::SeqCst);
-            Some("v1".to_string())
-        })
-        .await;
-
-        invalidate_digest(sid).await;
-
-        let c2 = calls.clone();
-        let d2 = get_digest_or_compute(sid, || async move {
-            c2.fetch_add(1, Ordering::SeqCst);
-            Some("v2".to_string())
-        })
-        .await;
-
-        assert_eq!(d2.as_deref(), Some("v2"));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
     async fn model_recomputes_on_backend_switch() {
         let calls = Arc::new(AtomicU32::new(0));
         let sid = "test-model-backend-switch";
@@ -400,31 +275,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalidate_all_digests_clears_every_session() {
-        let sid_a = "test-invalidate-all-a";
-        let sid_b = "test-invalidate-all-b";
-        invalidate_all(sid_a).await;
-        invalidate_all(sid_b).await;
+    async fn invalidate_all_clears_backend_and_model() {
+        let sid = "test-invalidate-all";
+        // Seed cache
+        let _ = get_backend_or_compute(sid, || async { Ok::<_, String>(Backend::Ollama) })
+            .await
+            .unwrap();
+        let _ = get_model_or_compute(sid, Backend::Ollama, || async {
+            "llama3:8b".to_string()
+        })
+        .await;
 
-        let _ = get_digest_or_compute(sid_a, || async { Some("a".to_string()) }).await;
-        let _ = get_digest_or_compute(sid_b, || async { Some("b".to_string()) }).await;
+        invalidate_all(sid).await;
 
-        invalidate_all_digests().await;
-
+        // Next call must recompute — prove it by counting compute invocations.
         let calls = Arc::new(AtomicU32::new(0));
-        let c1 = calls.clone();
-        let _ = get_digest_or_compute(sid_a, || async move {
-            c1.fetch_add(1, Ordering::SeqCst);
-            Some("a2".to_string())
+        let c = calls.clone();
+        let _ = get_backend_or_compute(sid, || async move {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, String>(Backend::Anthropic)
         })
-        .await;
-        let c2 = calls.clone();
-        let _ = get_digest_or_compute(sid_b, || async move {
-            c2.fetch_add(1, Ordering::SeqCst);
-            Some("b2".to_string())
-        })
-        .await;
-
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "both sessions recomputed");
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "invalidate_all must clear the backend cache"
+        );
     }
 }

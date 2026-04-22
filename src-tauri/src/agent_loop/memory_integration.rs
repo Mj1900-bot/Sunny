@@ -59,7 +59,7 @@ const RECENT_CONVO_PER_MSG_CHARS: usize = 220;
 /// shape) plus a semantic fact upsert keyed on the same subject. The
 /// semantic write is what `memory_recall` and the memory-digest builder
 /// actually consume; the episodic row is just a breadcrumb.
-pub async fn auto_remember_from_user(message: &str, session_id: Option<&str>) {
+pub async fn auto_remember_from_user(message: &str) {
     use regex::Regex;
     use std::sync::OnceLock;
 
@@ -206,15 +206,6 @@ pub async fn auto_remember_from_user(message: &str, session_id: Option<&str>) {
         if let Err(e) = joined {
             log::warn!("[tool-use] auto-remember join error: {e}");
         }
-    }
-
-    // Invalidate the session's cached memory digest so the next turn
-    // picks up this fresh fact. We're guaranteed to have persisted at
-    // least one fact by this point (the `matches.is_empty()` guard
-    // above returns early). No-op when called without a session_id
-    // (legacy callers).
-    if let Some(sid) = session_id {
-        crate::agent_loop::session_cache::invalidate_digest(sid).await;
     }
 }
 

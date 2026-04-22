@@ -17,10 +17,6 @@ pub async fn memory_fact_add(
         confidence,
         source,
     )?;
-    // UI-initiated write — we have no session_id, so conservatively
-    // invalidate every session's cached digest. Backend/model cache is
-    // untouched because those don't depend on memory state.
-    crate::agent_loop::session_cache::invalidate_all_digests().await;
     Ok(fact)
 }
 

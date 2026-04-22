@@ -11,7 +11,10 @@ const CAPS: &[&str] = &["memory.write"];
 const SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["text"]}"#;
 
 fn invoke<'a>(ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
-    let session_id = ctx.session_id.map(str::to_string);
+    // ctx.session_id is intentionally unread — we used to invalidate the
+    // per-session digest cache here, but the digest is rebuilt every
+    // turn now (it embeds live world state that can't be cached).
+    let _ = ctx;
     Box::pin(async move {
         let text = string_arg(&input, "text")?;
         let tags = input
@@ -36,12 +39,6 @@ fn invoke<'a>(ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
             Some(1.0),
             Some("tool-remember".to_string()),
         );
-        // Invalidate the session's cached memory digest so the next turn
-        // surfaces this fresh write instead of the stale digest from
-        // `prepare_context`. Backend/model cache is left untouched.
-        if let Some(sid) = session_id.as_deref() {
-            crate::agent_loop::session_cache::invalidate_digest(sid).await;
-        }
         Ok(format!("Remembered: {}", item.id))
     })
 }

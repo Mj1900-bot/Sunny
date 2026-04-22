@@ -125,15 +125,6 @@ pub async fn agent_reflect(
         summary_lines.push(format!("  • [{sev}] {}", lesson.lesson));
     }
 
-    // Invalidate the parent session's digest so the next turn picks up
-    // the freshly-written lessons. `parent_session_id` may be None for
-    // legacy callers — in which case we have nothing to key on.
-    if written > 0 {
-        if let Some(sid) = parent_session_id {
-            super::session_cache::invalidate_digest(sid).await;
-        }
-    }
-
     Ok(format!(
         "Self-reflection complete. Reviewed {n_steps} agent steps + {n_tools} tool calls, wrote {written} lesson(s):\n{bullets}",
         n_steps = steps.len(),
