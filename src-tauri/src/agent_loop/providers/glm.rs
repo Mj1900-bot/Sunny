@@ -158,13 +158,16 @@ pub async fn glm_turn(model: &str, system: &str, history: &[Value]) -> Result<Tu
         })
         .collect();
 
+    // GLM-5.1 reasoning-mode can spend a lot of tokens on hidden
+    // reasoning_content before emitting the final answer. Cap at
+    // 2048 to keep turn latency bounded — same rationale as kimi.rs.
     let body = json!({
         "model": model,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
         "temperature": 0.7,
-        "max_tokens": 4096,
+        "max_tokens": 2048,
         "stream": false,
     });
 

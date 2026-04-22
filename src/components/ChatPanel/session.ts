@@ -93,16 +93,11 @@ export function turnsToMessages(turns: readonly Turn[]): Message[] {
 function parseEnvelope(s: string): { text: string } | null {
   try {
     const p: unknown = JSON.parse(s);
-    if (
-      p === null ||
-      typeof p !== 'object' ||
-      Array.isArray(p) ||
-      typeof (p as Record<string, unknown>).action !== 'string'
-    ) return null;
+    if (p === null || typeof p !== 'object' || Array.isArray(p)) return null;
     const o = p as Record<string, unknown>;
-    // Only 'answer' envelopes carry human text. Tool / other action
-    // envelopes are agent-internal — return empty string so the
-    // display + TTS skip them rather than reading raw JSON aloud.
+    // Whitelist: only {action:'answer', text:<string>} is human-facing.
+    // Everything else (tool envelopes, verdict blobs, reflexion scores)
+    // is agent-internal and should not be shown or spoken.
     if (o.action === 'answer' && typeof o.text === 'string') {
       return { text: o.text };
     }
@@ -116,14 +111,29 @@ function parseEnvelope(s: string): { text: string } | null {
 function unwrapPersistedText(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return raw;
+  // Pure JSON envelope
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
     const parsed = parseEnvelope(trimmed);
     if (parsed) return parsed.text;
   }
-  const anchor = trimmed.search(/\{\s*"action"\s*:/);
-  if (anchor > 0 && trimmed.endsWith('}')) {
-    const parsed = parseEnvelope(trimmed.slice(anchor));
-    if (parsed) return parsed.text;
+  // Fenced ```json block
+  if (trimmed.startsWith('```json') && trimmed.endsWith('```')) {
+    const inner = trimmed.slice('```json'.length, -3).trim();
+    if (inner.startsWith('{') && inner.endsWith('}')) {
+      const parsed = parseEnvelope(inner);
+      if (parsed) return parsed.text;
+    }
+  }
+  // Prose + trailing JSON object — return the prose prefix, drop the
+  // trailing object regardless of its shape.
+  const lastOpen = trimmed.lastIndexOf('{');
+  if (lastOpen > 0 && trimmed.endsWith('}')) {
+    const parsed = parseEnvelope(trimmed.slice(lastOpen));
+    if (parsed) {
+      const prose = trimmed.slice(0, lastOpen).trimEnd();
+      if (prose.length > 0) return prose;
+      return parsed.text;
+    }
   }
   return raw;
 }

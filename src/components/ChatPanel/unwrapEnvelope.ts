@@ -19,32 +19,36 @@
  */
 
 /**
- * Result shape from tryParseEnvelope:
- *   - action === 'answer' → text is the human-visible answer (may be empty)
- *   - action === 'tool' / anything else → text is '' (the envelope is a
- *     machine-only action intent that should NOT be read aloud or shown
- *     in the transcript)
+ * Parse a string that may be a JSON envelope. Whitelist approach — we
+ * only recognise the single shape that carries human-readable text
+ * ({action:'answer', text:<string>}). Every other JSON object shape
+ * is treated as agent-internal metadata (tool intents, verdict blobs,
+ * reflexion scores, etc.) and returns empty text so display + TTS
+ * both skip it.
+ *
+ * This is the whitelist because Sunny's agent and models occasionally
+ * produce schemas we haven't seen before — tool envelopes, verdict
+ * critics, reasoning traces, subagent decisions. Any of them rendered
+ * verbatim in the chat or spoken aloud is broken UX. Default-suppress
+ * every unrecognised JSON object; a future structured response format
+ * can be added here explicitly when needed.
  */
-function tryParseEnvelope(s: string): { action: string; text: string } | null {
+function tryParseEnvelope(s: string): { text: string } | null {
   try {
     const p: unknown = JSON.parse(s);
     if (
       p === null ||
       typeof p !== 'object' ||
-      Array.isArray(p) ||
-      typeof (p as Record<string, unknown>).action !== 'string'
+      Array.isArray(p)
     ) return null;
     const o = p as Record<string, unknown>;
-    const action = o.action as string;
-    // Answer envelopes carry the human text in `.text`.
-    if (action === 'answer' && typeof o.text === 'string') {
-      return { action, text: o.text };
+    // Single known good shape: answer envelope with human-readable text.
+    if (o.action === 'answer' && typeof o.text === 'string') {
+      return { text: o.text };
     }
-    // Tool / other action envelopes (e.g. {"action":"tool","tool":"app_launch",…})
-    // are AGENT-INTERNAL intents. The agent loop dispatches the tool call
-    // directly; the raw JSON should never reach the UI transcript or TTS.
-    // Return empty string so display + speak both skip it.
-    return { action, text: '' };
+    // Everything else is agent-internal metadata → empty text means
+    // the UI suppresses the bubble and TTS doesn't speak.
+    return { text: '' };
   } catch {
     /* fall through */
   }
@@ -55,20 +59,39 @@ export function unwrapAgentEnvelope(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return raw;
 
-  // Shape 1: the whole string is the envelope.
+  // Shape 1: the whole string is JSON. Pure envelope case.
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
     const parsed = tryParseEnvelope(trimmed);
     if (parsed) return parsed.text;
   }
 
-  // Shape 2: prose + trailing envelope. Anchor on the `{"action"` marker
-  // because that's the specific envelope shape — arbitrary JSON objects
-  // inside prose (code samples, config snippets) shouldn't be touched.
-  const anchor = trimmed.search(/\{\s*"action"\s*:/);
-  if (anchor > 0 && trimmed.endsWith('}')) {
-    const tail = trimmed.slice(anchor);
+  // Shape 2: ```json fenced block (reflexion critics + some models wrap
+  // their structured output this way). Strip the fence and retry.
+  if (trimmed.startsWith('```json') && trimmed.endsWith('```')) {
+    const inner = trimmed.slice('```json'.length, -3).trim();
+    if (inner.startsWith('{') && inner.endsWith('}')) {
+      const parsed = tryParseEnvelope(inner);
+      if (parsed) return parsed.text;
+    }
+  }
+
+  // Shape 3: prose + trailing envelope. The anchor matches ANY JSON
+  // object that starts at position > 0 and runs to the end — covers
+  // {"action":…}, {"verdict":…}, {"tool":…}, etc. Conservative on
+  // non-envelope JSON in prose (code examples) because we require the
+  // `}` to be the very last non-whitespace character.
+  const lastOpen = trimmed.lastIndexOf('{');
+  if (lastOpen > 0 && trimmed.endsWith('}')) {
+    const tail = trimmed.slice(lastOpen);
     const parsed = tryParseEnvelope(tail);
-    if (parsed) return parsed.text;
+    if (parsed) {
+      // Prose came BEFORE the envelope — use the prose, not the
+      // envelope's text (if any). The envelope is the agent's
+      // structured echo; the prose is the human-readable version.
+      const prose = trimmed.slice(0, lastOpen).trimEnd();
+      if (prose.length > 0) return prose;
+      return parsed.text;
+    }
   }
 
   return raw;

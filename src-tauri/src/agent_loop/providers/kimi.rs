@@ -137,19 +137,21 @@ pub async fn kimi_turn(model: &str, system: &str, history: &[Value]) -> Result<T
     // K2.6 quirks (as of 2026-04-20 launch):
     //   * temperature is locked to 1.0 — Moonshot rejects any other
     //     value with HTTP 400 "invalid temperature: only 1 is allowed
-    //     for this model". This is model-specific; other Moonshot
-    //     models accept the usual 0-2 range.
-    //   * It's a reasoning model — hard prompts consume 500-1500 tokens
-    //     of chain-of-thought BEFORE producing `content`. 4k is the
-    //     floor; 8k gives the model room to actually finish. User pays
-    //     for reasoning tokens ($2.50/M output) so keep this bounded.
+    //     for this model".
+    //   * It's a reasoning model — outputs reasoning_content BEFORE
+    //     the user-visible content. Unbounded max_tokens invites the
+    //     model to reason for 30+ seconds on casual prompts, which
+    //     translates to the 'talking forever' UX complaint. 2048
+    //     tokens (input+output combined cap via the model) keeps
+    //     total latency under ~10s for most turns and still allows
+    //     ~500 words of reasoning + final answer. Costs less, faster.
     let body = json!({
         "model": model,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
         "temperature": 1,
-        "max_tokens": 8192,
+        "max_tokens": 2048,
         "stream": false,
     });
 
