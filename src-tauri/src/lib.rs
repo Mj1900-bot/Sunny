@@ -90,6 +90,7 @@ mod tools_weather;
 mod tools_web;
 
 mod browser;
+pub mod channels;
 pub mod perf_profile;
 pub mod event_bus;
 pub mod autopilot;
@@ -316,6 +317,8 @@ pub fn run() {
             commands::cost_today_json,
             // Plugins — read-only list of plugins loaded from ~/.sunny/plugins/.
             commands::plugin_list,
+            // Channels — Telegram adapter (bot-token channel; v0.1 scaffolding).
+            // Actual Tauri commands land once the polling loop + agent wiring do.
             // Brainstorm — multi-agent council deliberation.
             agent_loop::council::council_start,
             // Perf profiler — latency p50/p95 per model for Cost Dashboard.
