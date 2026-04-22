@@ -150,7 +150,7 @@ pub(super) async fn run_tool(
     // Pre-dispatch JSON Schema check.
     validate_args(name, input)?;
 
-    // Trait-registry dispatch — every tool lives in
+    // Trait-registry dispatch — every built-in tool lives in
     // `agent_loop::tools::*` and registers via `inventory::submit!`.
     if let Some(spec) = crate::agent_loop::tool_trait::find(name) {
         let initiator_owned = match requesting_agent.as_deref() {
@@ -172,6 +172,36 @@ pub(super) async fn run_tool(
             depth,
         };
         return (spec.invoke)(&ctx, input.clone()).await;
+    }
+
+    // Plugin-tool dispatch — the trait registry missed, so check
+    // `~/.sunny/plugins/` for a declared tool with this name. Plugin
+    // tools run through `plugins::executor::execute`, which enforces
+    // the `~/.sunny/plugins-allowlist.json` gate and all v0.2 safety
+    // rails (URL scheme, prefix match, timeout, body cap). See
+    // `agent_loop::plugins::executor` for the full model. The tool
+    // result is JSON-stringified here so the ReAct loop's existing
+    // `String` contract holds — the dispatcher wraps plugin output
+    // in `<untrusted_source>` via the `ExternalRead` trust class.
+    if let Some((plugin_id, tool_decl)) = crate::agent_loop::plugins::find_tool(name) {
+        let exec: crate::agent_loop::plugins::executor::PluginToolExec =
+            serde_json::from_value(
+                tool_decl
+                    .exec
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({"type": "placeholder"})),
+            )
+            .map_err(|e| {
+                format!(
+                    "plugin `{plugin_id}/{name}`: manifest exec section failed to parse: {e}"
+                )
+            })?;
+        let out = crate::agent_loop::plugins::executor::execute(
+            plugin_id, name, &exec, input,
+        )
+        .await?;
+        return serde_json::to_string(&out)
+            .map_err(|e| format!("plugin `{plugin_id}/{name}`: encode result: {e}"));
     }
 
     Err(format!("unknown tool: {name}"))

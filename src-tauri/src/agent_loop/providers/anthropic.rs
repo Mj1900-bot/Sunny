@@ -364,28 +364,39 @@ fn build_request_body(model: &str, system: &str, history: &[Value], stream: bool
 fn anthropic_tools_catalog() -> &'static Vec<Value> {
     static CACHED: OnceLock<Vec<Value>> = OnceLock::new();
     CACHED.get_or_init(|| {
-        let catalog = catalog_merged();
-        let tool_count = catalog.len();
-        catalog
+        let mut tools: Vec<Value> = catalog_merged()
             .iter()
-            .enumerate()
-            .map(|(i, t)| {
+            .map(|t| {
                 let schema: Value = serde_json::from_str(t.input_schema)
                     .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-                let mut entry = json!({
+                json!({
                     "name": t.name,
                     "description": t.description,
                     "input_schema": schema,
-                });
-                // Breakpoint #1: last tool entry → caches the whole
-                // tools block (and by prefix extension everything
-                // before it).
-                if i + 1 == tool_count {
-                    entry["cache_control"] = json!({"type": "ephemeral"});
-                }
-                entry
+                })
             })
-            .collect()
+            .collect();
+        // Append plugin-declared tools. Plugin registration runs
+        // before any LLM request (see `startup::setup` bootstrap),
+        // so by the time this OnceLock fires the plugin set is final
+        // for the process's lifetime.
+        for plugin in super::super::plugins::registered_plugins() {
+            for t in &plugin.manifest.tools {
+                tools.push(json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                }));
+            }
+        }
+        // Breakpoint #1: cache_control on the LAST entry in the final
+        // array (plugin or built-in), so Anthropic's prompt cache can
+        // serve the whole tools block across turns. Plugin list is
+        // stable per process, so this cache is safe.
+        if let Some(last) = tools.last_mut() {
+            last["cache_control"] = json!({"type": "ephemeral"});
+        }
+        tools
     })
 }
 

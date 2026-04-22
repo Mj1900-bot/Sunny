@@ -438,6 +438,26 @@ pub fn registered_plugins() -> &'static [LoadedPlugin] {
     REGISTRY.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
+/// Look up a tool by name across every registered plugin. Returns
+/// the plugin id + tool declaration, or `None` when the name matches
+/// no loaded plugin. Called from `dispatch::execute::run_tool` after
+/// the trait-registry lookup misses.
+///
+/// Plugin tool-name uniqueness is enforced at load time (cross-plugin
+/// collisions are rejected in `scan_dir`), so the first match wins
+/// without ambiguity. References are `&'static` because the registry
+/// is a `OnceLock<Vec<LoadedPlugin>>` — entries live until process exit.
+pub fn find_tool(name: &str) -> Option<(&'static str, &'static PluginToolDecl)> {
+    for p in registered_plugins() {
+        for t in &p.manifest.tools {
+            if t.name == name {
+                return Some((p.manifest.id.as_str(), t));
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // ~/.sunny/plugins/ convenience
 // ---------------------------------------------------------------------------
@@ -832,6 +852,19 @@ mod tests {
         // Slice is always a valid reference, may or may not be empty
         // depending on test order. What we check: it's a &'static [].
         let _ = slice.len();
+    }
+
+    /// `find_tool` returns `None` against whatever the test-order'd
+    /// registry state is — we can't reliably assert "registry is empty"
+    /// because OnceLock is process-wide. What we CAN assert is the
+    /// function's negative contract: a name no sane plugin would ever
+    /// declare must miss. Positive-path coverage is exercised at
+    /// integration level (the dispatch router test with a bootstrapped
+    /// registry would race OnceLock with other tests).
+    #[test]
+    fn find_tool_returns_none_for_obviously_missing_name() {
+        let hit = find_tool("zzz_definitely_not_a_real_plugin_tool_name_42_xyz");
+        assert!(hit.is_none());
     }
 
     /// End-to-end: scan a real tmp directory with one valid plugin,

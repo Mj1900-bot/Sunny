@@ -138,7 +138,7 @@ pub fn openai_chat_tools_catalog() -> &'static Vec<serde_json::Value> {
 
     static CACHED: OnceLock<Vec<Value>> = OnceLock::new();
     CACHED.get_or_init(|| {
-        catalog_merged()
+        let mut tools: Vec<Value> = catalog_merged()
             .iter()
             .map(|t| {
                 let schema: Value = serde_json::from_str(t.input_schema)
@@ -152,7 +152,26 @@ pub fn openai_chat_tools_catalog() -> &'static Vec<serde_json::Value> {
                     }
                 })
             })
-            .collect()
+            .collect();
+        // Append every plugin-declared tool. Plugin registration
+        // happens in `startup::setup` via `plugins::bootstrap`, which
+        // runs before the Tauri event loop starts — i.e. before any
+        // LLM request can trigger this OnceLock. On a fresh install
+        // (or during unit tests where bootstrap doesn't run) the
+        // registry is empty and this loop contributes nothing.
+        for plugin in super::plugins::registered_plugins() {
+            for t in &plugin.manifest.tools {
+                tools.push(json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                }));
+            }
+        }
+        tools
     })
 }
 
