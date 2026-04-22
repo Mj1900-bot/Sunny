@@ -737,23 +737,13 @@ async fn call_llm(ctx: &mut LoopCtx, iteration: u32) -> Result<TurnOutcome, Stri
     let is_main = ctx.is_main();
 
     // ── K4: task_classifier ─────────────────────────────────────────────────
-    // Classify the task with a 500 ms timeout; fall back to heuristic on
-    // timeout so we never block the turn on a slow classifier.
-    let task_class: Option<TaskClass> = {
-        let msg = ctx.req.message.clone();
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            tokio::task::spawn_blocking(move || classify_task_heuristic(&msg)),
-        )
-        .await
-        {
-            Ok(Ok(tc)) => Some(tc),
-            _ => {
-                log::debug!("call_llm: task_classifier timeout/error — using heuristic fallback");
-                Some(classify_task_heuristic(&ctx.req.message))
-            }
-        }
-    };
+    // Pure-CPU keyword heuristic over a bounded string (~1 µs on typical
+    // messages). Previously wrapped in tokio::time::timeout(500 ms) +
+    // tokio::task::spawn_blocking "for safety" — but the classifier is
+    // deterministic and cannot hang, so the wrapper only added scheduler
+    // overhead and a 500 ms worst-case critical-path spike when the
+    // blocking pool was saturated. Call directly.
+    let task_class: Option<TaskClass> = Some(classify_task_heuristic(&ctx.req.message));
     // Stash the class on ctx so the Finalizing arm can consult it when
     // deciding whether to run the critic. See critic::maybe_run_critic.
     ctx.task_class = task_class;
@@ -1393,8 +1383,9 @@ fn is_transient_unavailable(e: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Classify the user message into a broad `TaskClass` using keyword
-/// heuristics.  Called synchronously in a `spawn_blocking` wrapper with a
-/// 500 ms timeout so slow text never blocks the async executor.
+/// heuristics. Pure CPU over a bounded string — deterministic, cannot
+/// hang, cheap enough to call directly from an async context without
+/// any wrapper.
 pub(super) fn classify_task_heuristic(msg: &str) -> TaskClass {
     let lower = msg.to_ascii_lowercase();
 
