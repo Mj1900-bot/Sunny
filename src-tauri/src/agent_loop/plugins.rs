@@ -58,6 +58,8 @@
 //! * Semver version strings must parse (`MAJOR.MINOR.PATCH`
 //!   with optional `-pre` / `+build` segments).
 
+pub mod executor;
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
