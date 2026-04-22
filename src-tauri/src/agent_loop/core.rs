@@ -540,7 +540,17 @@ async fn prepare_context(
     // run once per session instead of once per turn. Sub-agents bypass
     // the cache entirely to avoid leaking routing decisions between
     // parent and child (see `session_cache` module docs for rationale).
-    let (backend, model) = if sub_id.is_none() {
+    //
+    // We only cache when the caller is relying on the heuristic — an
+    // explicit `ChatRequest.provider` override (e.g. Settings is pinned
+    // to "glm") must recompute every turn so a mid-session flip
+    // ("glm" → "auto" or "auto" → "anthropic") lands on the very next
+    // turn instead of being masked by a stale cached value.
+    let is_heuristic_route = matches!(
+        req.provider.as_deref(),
+        None | Some("") | Some("auto"),
+    );
+    let (backend, model) = if sub_id.is_none() && is_heuristic_route {
         if let Some(sid) = req.session_id.as_deref() {
             let b = super::session_cache::get_backend_or_compute(sid, || pick_backend(&req)).await?;
             let m = super::session_cache::get_model_or_compute(sid, b, || pick_model(&req, b)).await;
@@ -553,6 +563,7 @@ async fn prepare_context(
             (b, m)
         }
     } else {
+        // Explicit provider override OR sub-agent: direct path, no cache.
         let b = pick_backend(&req).await?;
         let m = pick_model(&req, b).await;
         (b, m)
