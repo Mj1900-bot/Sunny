@@ -988,4 +988,90 @@ mod tests {
         let arr = system_blocks.as_array().unwrap();
         assert_eq!(arr[0]["cache_control"], json!({"type": "ephemeral"}));
     }
+
+    // ── stamp_cache_control_on_last_user_message tests ──────────────────────
+
+    /// Breakpoint #4 (cache WRITE): stamps the LAST user message with
+    /// string content — must lift to a block array and attach cache_control.
+    #[test]
+    fn last_user_stamp_lifts_string_content_to_block_array() {
+        let messages = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "hi"}),
+            json!({"role": "user", "content": "live turn"}),
+        ];
+        let stamped = stamp_cache_control_on_last_user_message(messages);
+        // The last user message (index 2) should have array content now.
+        let last = &stamped[2];
+        assert_eq!(last["role"], "user");
+        let content = last["content"].as_array().expect("content must be array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "live turn");
+        assert_eq!(content[0]["cache_control"], json!({"type": "ephemeral"}));
+        // Earlier messages are untouched.
+        assert_eq!(stamped[0]["content"], "hello");
+        assert_eq!(stamped[1]["content"], "hi");
+    }
+
+    /// With array content on the last user, only the LAST block gets
+    /// cache_control — earlier blocks in the same message (e.g. an image +
+    /// text pair) remain untouched.
+    #[test]
+    fn last_user_stamp_only_hits_last_block_in_array_content() {
+        let messages = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "first block"},
+                {"type": "text", "text": "final block"},
+            ]
+        })];
+        let stamped = stamp_cache_control_on_last_user_message(messages);
+        let blocks = stamped[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(
+            blocks[0].get("cache_control").is_none(),
+            "first block must NOT be stamped"
+        );
+        assert_eq!(
+            blocks[1]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "last block must carry cache_control"
+        );
+    }
+
+    /// No user messages at all → no-op (returns the input unchanged).
+    #[test]
+    fn last_user_stamp_no_op_when_no_user_messages() {
+        let messages = vec![
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "assistant", "content": "asst"}),
+        ];
+        let original = messages.clone();
+        let stamped = stamp_cache_control_on_last_user_message(messages);
+        assert_eq!(stamped, original);
+    }
+
+    /// Composing both breakpoints (apply_history_cache_breakpoint + the
+    /// new tail stamp) produces TWO cache_control markers in the messages
+    /// array — one on the message before the last user, one on the last
+    /// user's last block. This is what enables cache reads AND writes on
+    /// the same turn.
+    #[test]
+    fn composing_both_breakpoints_produces_two_message_markers() {
+        let messages = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "hi"}),
+            json!({"role": "user", "content": "live turn"}),
+        ];
+        let stepped = apply_history_cache_breakpoint(messages);
+        let stamped = stamp_cache_control_on_last_user_message(stepped);
+        let serialised = serde_json::to_string(&stamped).unwrap();
+        let marker_count = serialised.matches("cache_control").count();
+        assert_eq!(
+            marker_count, 2,
+            "expected exactly 2 cache_control markers (history boundary + \
+             tail stamp); got {marker_count} in:\n{serialised}"
+        );
+    }
 }

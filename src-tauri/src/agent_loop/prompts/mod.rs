@@ -706,4 +706,126 @@ mod tests {
         assert!(!result.contains("fourth"), "must NOT include fourth sentence");
     }
 
+    // ── SUNNY_CACHE_BOUNDARY / split tests ──────────────────────────────────
+
+    /// Splitting a string with the marker returns (prefix, suffix) correctly.
+    #[test]
+    fn split_cache_boundary_basic() {
+        let s = format!("stable content{}dynamic content", SUNNY_CACHE_BOUNDARY);
+        let (prefix, suffix) = split_system_prompt_cache_boundary(&s);
+        assert_eq!(prefix, "stable content");
+        assert_eq!(suffix, "dynamic content");
+    }
+
+    /// Splitting a string WITHOUT the marker returns (whole, empty).
+    /// This is the legacy-path contract the Anthropic provider relies on
+    /// to fall back to a single-block system field.
+    #[test]
+    fn split_cache_boundary_no_marker_returns_whole_string() {
+        let s = "no marker here — pure legacy prompt";
+        let (prefix, suffix) = split_system_prompt_cache_boundary(s);
+        assert_eq!(prefix, s);
+        assert_eq!(suffix, "");
+    }
+
+    /// Empty input is safely handled.
+    #[test]
+    fn split_cache_boundary_empty_input() {
+        let (prefix, suffix) = split_system_prompt_cache_boundary("");
+        assert_eq!(prefix, "");
+        assert_eq!(suffix, "");
+    }
+
+    /// `build_system_prompt` always emits the boundary marker — even when
+    /// there's no dynamic content. The Anthropic provider's cache split
+    /// relies on this.
+    #[test]
+    fn build_system_prompt_always_contains_cache_boundary() {
+        let ctx = PromptContext {
+            base: "base",
+            ..Default::default()
+        };
+        let out = build_system_prompt(&ctx);
+        assert!(
+            out.contains(SUNNY_CACHE_BOUNDARY.trim()),
+            "build_system_prompt must always emit SUNNY_CACHE_BOUNDARY so the \
+             cache split in providers/anthropic.rs has a seam to split on"
+        );
+    }
+
+    /// Memory digest MUST sit below the boundary — otherwise digest changes
+    /// would invalidate the cached prefix on every turn.
+    #[test]
+    fn memory_digest_positioned_below_cache_boundary() {
+        let digest = "MEMORY DIGEST: user name: Sunny";
+        let ctx = PromptContext {
+            base: "base prelude",
+            digest: Some(digest),
+            ..Default::default()
+        };
+        let out = build_system_prompt(&ctx);
+        let boundary_pos = out
+            .find(SUNNY_CACHE_BOUNDARY.trim())
+            .expect("boundary must be present");
+        let digest_pos = out.find(digest).expect("digest must be present");
+        assert!(
+            digest_pos > boundary_pos,
+            "digest ({digest_pos}) must appear AFTER cache boundary ({boundary_pos})"
+        );
+    }
+
+    /// The base prelude MUST sit above the boundary — it's stable content
+    /// that the user's caller supplies once per session.
+    #[test]
+    fn base_positioned_above_cache_boundary() {
+        let base = "MY_BASE_PRELUDE_XYZ";
+        let ctx = PromptContext {
+            base,
+            ..Default::default()
+        };
+        let out = build_system_prompt(&ctx);
+        let boundary_pos = out
+            .find(SUNNY_CACHE_BOUNDARY.trim())
+            .expect("boundary must be present");
+        let base_pos = out.find(base).expect("base must be present");
+        assert!(
+            base_pos < boundary_pos,
+            "base ({base_pos}) must appear BEFORE cache boundary ({boundary_pos})"
+        );
+    }
+
+    /// The query_hint (current-events nudge) is per-turn — sits below boundary.
+    #[test]
+    fn query_hint_positioned_below_cache_boundary() {
+        let ctx = PromptContext {
+            base: "base",
+            query_hint: Some(CURRENT_EVENTS_HINT),
+            ..Default::default()
+        };
+        let out = build_system_prompt(&ctx);
+        let boundary_pos = out.find(SUNNY_CACHE_BOUNDARY.trim()).unwrap();
+        let hint_pos = out.find(CURRENT_EVENTS_HINT).unwrap();
+        assert!(
+            hint_pos > boundary_pos,
+            "query_hint must sit in dynamic suffix (below boundary)"
+        );
+    }
+
+    /// Canary sentinel sits below the boundary — the sentinel embeds a
+    /// random token that must invalidate that turn's cache read.
+    #[test]
+    fn canary_positioned_below_cache_boundary() {
+        let ctx = PromptContext {
+            base: "base",
+            ..Default::default()
+        };
+        let out = build_system_prompt(&ctx);
+        let boundary_pos = out.find(SUNNY_CACHE_BOUNDARY.trim()).unwrap();
+        let canary_pos = out.find("PRIVILEGED_CONTEXT").unwrap();
+        assert!(
+            canary_pos > boundary_pos,
+            "canary sentinel must sit in dynamic suffix (its random token \
+             must invalidate the cache for that turn)"
+        );
+    }
 }
