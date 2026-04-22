@@ -73,6 +73,14 @@ pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         crate::agent_loop::core::warm_main_session_cache().await;
     });
 
+    // Plugin system bootstrap (v0.1): scan `~/.sunny/plugins/` and
+    // install the process-wide registry. The v0.1 scope is read-only
+    // discovery + the `plugin_list` Tauri command so the HUD can show
+    // what's loaded; tool execution is gated behind a capability model
+    // that lands in v0.2. Failures log-and-continue — one bad manifest
+    // cannot block app startup.
+    crate::agent_loop::plugins::bootstrap();
+
     // Hook 1: Autopilot proactive daemon — T0/T1 tier (silent log + HUD pulse).
     // T2+ voice surfaces remain gated by deliberator::AUTOPILOT_SPEAK_ENABLED (false).
     // Enabled by default; opt-out via SUNNY_AUTOPILOT_ENABLED=false.

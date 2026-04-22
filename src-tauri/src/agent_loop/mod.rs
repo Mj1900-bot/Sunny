@@ -31,6 +31,7 @@ pub mod memory_integration;
 pub mod model_router;
 pub mod persona;
 pub mod plan_execute;
+pub mod plugins;
 pub mod prompts;
 pub mod providers;
 pub mod reflect;

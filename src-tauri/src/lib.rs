@@ -314,6 +314,8 @@ pub fn run() {
             commands::skill_export_save_bulk,
             // CostPage — today's spend aggregated from the telemetry ring.
             commands::cost_today_json,
+            // Plugins — read-only list of plugins loaded from ~/.sunny/plugins/.
+            commands::plugin_list,
             // Brainstorm — multi-agent council deliberation.
             agent_loop::council::council_start,
             // Perf profiler — latency p50/p95 per model for Cost Dashboard.
