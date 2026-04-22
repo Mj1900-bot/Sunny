@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -275,31 +276,14 @@ pub async fn anthropic_turn_streaming(
 // ---------------------------------------------------------------------------
 
 fn build_request_body(model: &str, system: &str, history: &[Value], stream: bool) -> Value {
-    // Build the tools array. Anthropic's prompt cache treats the tool
-    // catalog as part of the prefix: a `cache_control` marker on the
-    // LAST tool entry caches the entire tools block. Since the
-    // trait-registered catalog rarely changes, this is near-100% hit.
-    let catalog = catalog_merged();
-    let tool_count = catalog.len();
-    let tools: Vec<Value> = catalog
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let schema: Value = serde_json::from_str(t.input_schema)
-                .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
-            let mut entry = json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": schema,
-            });
-            // Breakpoint #1: last tool entry → caches the whole tools
-            // block (and by prefix extension everything before it).
-            if i + 1 == tool_count {
-                entry["cache_control"] = json!({"type": "ephemeral"});
-            }
-            entry
-        })
-        .collect();
+    // Tools are built once per process (the trait-registered catalog
+    // is static after `inventory::submit!` link-time registration) and
+    // memoised here. Previously this block re-parsed each tool's
+    // `input_schema` JSON string on every turn — ~20 tools × from_str
+    // per request, totalling ~1-2 ms on the Anthropic hot path. The
+    // cached Vec<Value> is cloned per request (deep clone, ~200-500 µs)
+    // which is cheaper than re-parsing from strings.
+    let tools = anthropic_tools_catalog().clone();
 
     // Phase 3 pre-send redaction — scrub secrets out of the system
     // prompt + message history before they hit a remote provider.
@@ -366,6 +350,42 @@ fn build_request_body(model: &str, system: &str, history: &[Value], stream: bool
         "tools": tools,
         "messages": messages_cached,
         "stream": stream,
+    })
+}
+
+/// Memoised Anthropic-formatted tool array. Built once on first access
+/// from the static `catalog_merged()` inventory; parsed schemas and the
+/// Breakpoint #1 `cache_control` stamp on the last entry are baked in.
+///
+/// Returns a reference so callers decide whether to clone for ownership.
+/// `build_request_body` clones per turn — serde_json::Value::clone is
+/// a deep clone but still ~5-10× cheaper than re-parsing each schema
+/// from its JSON-string literal on every turn.
+fn anthropic_tools_catalog() -> &'static Vec<Value> {
+    static CACHED: OnceLock<Vec<Value>> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        let catalog = catalog_merged();
+        let tool_count = catalog.len();
+        catalog
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let schema: Value = serde_json::from_str(t.input_schema)
+                    .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
+                let mut entry = json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": schema,
+                });
+                // Breakpoint #1: last tool entry → caches the whole
+                // tools block (and by prefix extension everything
+                // before it).
+                if i + 1 == tool_count {
+                    entry["cache_control"] = json!({"type": "ephemeral"});
+                }
+                entry
+            })
+            .collect()
     })
 }
 
@@ -1050,6 +1070,43 @@ mod tests {
         let original = messages.clone();
         let stamped = stamp_cache_control_on_last_user_message(messages);
         assert_eq!(stamped, original);
+    }
+
+    /// Memoised tool catalog returns the same `&'static Vec` on repeat
+    /// calls — the whole point is to avoid re-parsing every turn.
+    #[test]
+    fn anthropic_tools_catalog_is_memoised() {
+        let a = anthropic_tools_catalog();
+        let b = anthropic_tools_catalog();
+        assert!(
+            std::ptr::eq(a, b),
+            "memoised catalog must return the same static reference; \
+             got a={a:p}, b={b:p}"
+        );
+    }
+
+    /// The last tool entry MUST carry `cache_control` (Breakpoint #1).
+    /// Without it Anthropic doesn't cache the tool block, which is
+    /// typically the largest static piece of the prefix.
+    #[test]
+    fn anthropic_tools_last_entry_carries_cache_control() {
+        let tools = anthropic_tools_catalog();
+        if let Some(last) = tools.last() {
+            assert_eq!(
+                last["cache_control"],
+                json!({"type": "ephemeral"}),
+                "last tool entry must carry cache_control=ephemeral"
+            );
+            // Sanity check: earlier entries (if any) MUST NOT have it —
+            // Anthropic charges per marker, and the protocol expects the
+            // stamp on the tail only.
+            for (i, entry) in tools.iter().take(tools.len() - 1).enumerate() {
+                assert!(
+                    entry.get("cache_control").is_none(),
+                    "tool entry #{i} must NOT carry cache_control (only last does)"
+                );
+            }
+        }
     }
 
     /// Composing both breakpoints (apply_history_cache_breakpoint + the
