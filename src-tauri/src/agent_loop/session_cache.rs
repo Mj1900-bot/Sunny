@@ -59,12 +59,48 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 
 use super::types::Backend;
+
+// Process-cumulative hit/miss counters. Relaxed ordering is fine — we
+// only use these for rough telemetry logs at turn end; stale reads
+// across cores are acceptable.
+static BACKEND_HITS: AtomicU64 = AtomicU64::new(0);
+static BACKEND_MISSES: AtomicU64 = AtomicU64::new(0);
+static MODEL_HITS: AtomicU64 = AtomicU64::new(0);
+static MODEL_MISSES: AtomicU64 = AtomicU64::new(0);
+static DIGEST_HITS: AtomicU64 = AtomicU64::new(0);
+static DIGEST_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative cache hit/miss counts since process start. Read at turn
+/// end in `complete_main_turn` for the latency telemetry log line —
+/// users eyeball turn-to-turn deltas to see if the cache is healthy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CacheStats {
+    pub backend_hits: u64,
+    pub backend_misses: u64,
+    pub model_hits: u64,
+    pub model_misses: u64,
+    pub digest_hits: u64,
+    pub digest_misses: u64,
+}
+
+/// Snapshot of the cumulative counters. Cheap (six atomic loads).
+pub fn snapshot() -> CacheStats {
+    CacheStats {
+        backend_hits: BACKEND_HITS.load(Ordering::Relaxed),
+        backend_misses: BACKEND_MISSES.load(Ordering::Relaxed),
+        model_hits: MODEL_HITS.load(Ordering::Relaxed),
+        model_misses: MODEL_MISSES.load(Ordering::Relaxed),
+        digest_hits: DIGEST_HITS.load(Ordering::Relaxed),
+        digest_misses: DIGEST_MISSES.load(Ordering::Relaxed),
+    }
+}
 
 /// Per-session cached decisions. All fields `None` means "never
 /// computed for this session yet".
@@ -123,8 +159,10 @@ where
     let cell = get_or_init(session_id);
     let mut guard = cell.lock().await;
     if let Some(b) = guard.backend {
+        BACKEND_HITS.fetch_add(1, Ordering::Relaxed);
         return Ok(b);
     }
+    BACKEND_MISSES.fetch_add(1, Ordering::Relaxed);
     // Compute while holding the per-session lock. The
     // session-serialization lock in `session_lock.rs` already ensures
     // only one turn per session runs at a time, so this extra hold is
@@ -158,11 +196,13 @@ where
     let cached_backend_matches = guard.backend == Some(backend);
     if cached_backend_matches {
         if let Some(m) = guard.model.as_ref() {
+            MODEL_HITS.fetch_add(1, Ordering::Relaxed);
             return m.clone();
         }
     } else {
         guard.model = None;
     }
+    MODEL_MISSES.fetch_add(1, Ordering::Relaxed);
 
     let model = compute().await;
     guard.model = Some(model.clone());
@@ -193,8 +233,10 @@ where
     let mut guard = cell.lock().await;
 
     if guard.digest_version > 0 {
+        DIGEST_HITS.fetch_add(1, Ordering::Relaxed);
         return guard.digest.clone();
     }
+    DIGEST_MISSES.fetch_add(1, Ordering::Relaxed);
 
     let digest = compute().await;
     guard.digest = digest.clone();

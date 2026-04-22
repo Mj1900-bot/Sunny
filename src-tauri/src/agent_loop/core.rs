@@ -1216,6 +1216,26 @@ async fn complete_main_turn(ctx: &LoopCtx, final_text: String) -> Result<String,
     // the answer, so an `agent_wait`-ing sibling can see the top-level
     // loop has finished.
     super::dialogue::set_result(&ctx.dialogue_id, final_text.clone());
+
+    // Latency + cache telemetry. One line per turn — cumulative hit
+    // counts mean users eyeball deltas between turns to verify the
+    // session cache is healthy. Keeping this terse so it doesn't bloat
+    // logs on voice sessions firing every second.
+    if ctx.is_main() {
+        let s = super::session_cache::snapshot();
+        log::info!(
+            "turn_done: total={}ms depth={} tools={} \
+             cache(b={}/{} m={}/{} d={}/{}) task_class={:?}",
+            ctx.started.elapsed().as_millis(),
+            ctx.depth,
+            ctx.tool_names_collected.len(),
+            s.backend_hits, s.backend_misses,
+            s.model_hits, s.model_misses,
+            s.digest_hits, s.digest_misses,
+            ctx.task_class,
+        );
+    }
+
     Ok(final_text)
 }
 
