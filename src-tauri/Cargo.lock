@@ -6959,7 +6959,7 @@ dependencies = [
  "chrono-tz",
  "cpal",
  "csv",
- "dirs 5.0.1",
+ "dirs 6.0.0",
  "dirs-next",
  "ed25519-dalek",
  "ego-tree",

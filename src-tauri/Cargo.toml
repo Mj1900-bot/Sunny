@@ -49,7 +49,7 @@ url = "2"
 # Optional bundled Tor — off by default. See the `bundled-tor` feature.
 arti-client = { version = "0.23", optional = true, default-features = false, features = ["rustls", "tokio"] }
 tor-rtcompat = { version = "0.23", optional = true, default-features = false, features = ["rustls", "tokio"] }
-dirs = "5"
+dirs = "6"
 dirs-next = "2"
 base64 = "0.22"
 enigo = "0.3"
