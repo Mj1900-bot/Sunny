@@ -1,0 +1,32 @@
+{
+  "adversarial": false,
+  "category": "deep_research_fanout",
+  "expected_tools": [
+    "spawn_subagent",
+    "deep_research",
+    "web_search",
+    "web_fetch"
+  ],
+  "id": "drf_04",
+  "latency_class": "background_unbounded",
+  "memory_depth": "same_session",
+  "notes": "Background task; fanout cap of 4 sub-agents enforced at scheduler.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "allow_network": true,
+    "background_allowed": true,
+    "fanout_cap": 4,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "0f4f9914cc0095c137ae998811e544b78f7ea058bb6a2fa21884550fd609cb93",
+  "sla_budget_ms": {
+    "first_token": 3000,
+    "full_response": 30000,
+    "prep_context": 500
+  },
+  "trigger": "typed_hud",
+  "user_message": "Do a full research sweep on recent graph-database startups.",
+  "write_severity": "read_only"
+}

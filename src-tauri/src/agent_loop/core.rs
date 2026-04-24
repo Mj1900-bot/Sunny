@@ -423,7 +423,26 @@ pub async fn agent_run_inner(
     sub_id: Option<String>,
     depth: u32,
 ) -> Result<String, String> {
+    // Latency-harness stage markers. All are no-ops outside a harness
+    // scope (see `crate::latency_harness::stage_marker`) so production
+    // traffic pays a single task-local lookup.
+    let prep_started = std::time::Instant::now();
+    crate::latency_harness::stage_marker(
+        crate::latency_harness::stages::TURN_START,
+        Some(serde_json::json!({
+            "depth": depth,
+            "sub_id": sub_id.clone(),
+        })),
+    );
     let mut ctx = prepare_context(app, req, sub_id, depth).await?;
+    let prep_ms = prep_started.elapsed().as_millis() as u64;
+    crate::latency_harness::stage_marker(
+        crate::latency_harness::stages::PREP_CONTEXT_END,
+        Some(serde_json::json!({
+            "prep_ms": prep_ms,
+            "task_class": format!("{:?}", ctx.task_class),
+        })),
+    );
     let mut state = AgentState::Preparing;
 
     loop {
@@ -436,6 +455,37 @@ pub async fn agent_run_inner(
 
             AgentState::CallingLLM { iteration } => {
                 if ctx.budget_elapsed() {
+                    // Persist a sentinel `turn_timeout` row so cross-session
+                    // SLA analysis can answer "how often does the 120 s
+                    // ceiling fire on voice Factual queries?". Best-effort,
+                    // fail-open.
+                    let was_voice = super::core_helpers::is_voice_session(
+                        ctx.req.session_id.as_deref(),
+                    );
+                    let task_class_str = ctx.task_class.as_ref().map(|c| format!("{:?}", c));
+                    let timeout_event = crate::telemetry::TelemetryEvent {
+                        provider: "agent_loop".to_string(),
+                        model: "budget_elapsed".to_string(),
+                        duration_ms: ctx.started.elapsed().as_millis() as u64,
+                        at: chrono::Utc::now().timestamp(),
+                        was_voice,
+                        task_class: task_class_str,
+                        session_id: ctx.req.session_id.clone(),
+                        iteration: Some(iteration),
+                        kind: "timeout".to_string(),
+                        ..Default::default()
+                    };
+                    crate::telemetry::record_turn_timeout(
+                        timeout_event,
+                        "budget_elapsed at CallingLLM",
+                    );
+                    crate::latency_harness::stage_marker(
+                        crate::latency_harness::stages::TURN_TIMEOUT,
+                        Some(serde_json::json!({
+                            "phase": "CallingLLM",
+                            "iteration": iteration,
+                        })),
+                    );
                     AgentEvent::Timeout {
                         partial: ctx.last_draft.clone(),
                     }
@@ -467,11 +517,50 @@ pub async fn agent_run_inner(
 
             AgentState::DispatchingTools { iteration } => {
                 if ctx.budget_elapsed() {
+                    let was_voice = super::core_helpers::is_voice_session(
+                        ctx.req.session_id.as_deref(),
+                    );
+                    let task_class_str = ctx.task_class.as_ref().map(|c| format!("{:?}", c));
+                    let timeout_event = crate::telemetry::TelemetryEvent {
+                        provider: "agent_loop".to_string(),
+                        model: "budget_elapsed".to_string(),
+                        duration_ms: ctx.started.elapsed().as_millis() as u64,
+                        at: chrono::Utc::now().timestamp(),
+                        was_voice,
+                        task_class: task_class_str,
+                        session_id: ctx.req.session_id.clone(),
+                        iteration: Some(iteration),
+                        kind: "timeout".to_string(),
+                        ..Default::default()
+                    };
+                    crate::telemetry::record_turn_timeout(
+                        timeout_event,
+                        "budget_elapsed at DispatchingTools",
+                    );
+                    crate::latency_harness::stage_marker(
+                        crate::latency_harness::stages::TURN_TIMEOUT,
+                        Some(serde_json::json!({
+                            "phase": "DispatchingTools",
+                            "iteration": iteration,
+                        })),
+                    );
                     AgentEvent::Timeout {
                         partial: ctx.last_draft.clone(),
                     }
                 } else {
+                    crate::latency_harness::stage_marker(
+                        crate::latency_harness::stages::TOOL_DISPATCH_START,
+                        Some(serde_json::json!({ "iteration": iteration })),
+                    );
+                    let t_disp = std::time::Instant::now();
                     run_staged_tools(&mut ctx, iteration).await;
+                    crate::latency_harness::stage_marker(
+                        crate::latency_harness::stages::TOOL_DISPATCH_END,
+                        Some(serde_json::json!({
+                            "iteration": iteration,
+                            "elapsed_ms": t_disp.elapsed().as_millis() as u64,
+                        })),
+                    );
                     AgentEvent::ToolsDispatched
                 }
             }
@@ -541,19 +630,20 @@ async fn prepare_context(
     // the cache entirely to avoid leaking routing decisions between
     // parent and child (see `session_cache` module docs for rationale).
     //
-    // We only cache when the caller is relying on the heuristic — an
-    // explicit `ChatRequest.provider` override (e.g. Settings is pinned
-    // to "glm") must recompute every turn so a mid-session flip
-    // ("glm" → "auto" or "auto" → "anthropic") lands on the very next
-    // turn instead of being masked by a stale cached value.
-    let is_heuristic_route = matches!(
-        req.provider.as_deref(),
-        None | Some("") | Some("auto"),
-    );
-    let (backend, model) = if sub_id.is_none() && is_heuristic_route {
+    // The cache key is `(session_id, provider_pin)`. The provider pin
+    // is the normalised `ChatRequest.provider` string — `"auto"` for
+    // the heuristic path, otherwise the canonical backend name. That
+    // means a user pinned to `"glm"` in Settings gets the same "compute
+    // once per session" behaviour as the heuristic route, while a
+    // mid-session flip (`"auto"` → `"glm"` or `"glm"` → `"ollama"`)
+    // produces a fresh cache entry rather than reusing a stale one.
+    let (backend, model) = if sub_id.is_none() {
         if let Some(sid) = req.session_id.as_deref() {
-            let b = super::session_cache::get_backend_or_compute(sid, || pick_backend(&req)).await?;
-            let m = super::session_cache::get_model_or_compute(sid, b, || pick_model(&req, b)).await;
+            let pin = super::session_cache::normalize_provider_pin(req.provider.as_deref());
+            let b = super::session_cache::get_backend_or_compute(sid, pin, || pick_backend(&req))
+                .await?;
+            let m = super::session_cache::get_model_or_compute(sid, pin, b, || pick_model(&req, b))
+                .await;
             (b, m)
         } else {
             // Legacy main-agent caller with no session_id — nothing to key
@@ -563,7 +653,7 @@ async fn prepare_context(
             (b, m)
         }
     } else {
-        // Explicit provider override OR sub-agent: direct path, no cache.
+        // Sub-agent: direct path, no cache (see module docs for why).
         let b = pick_backend(&req).await?;
         let m = pick_model(&req, b).await;
         (b, m)
@@ -1055,12 +1145,26 @@ async fn run_staged_tools(ctx: &mut LoopCtx, iteration: u32) {
     let depth = ctx.depth;
     let reason = batch.reason;
 
+    // Deterministic turn id shared across every tool call in this iteration,
+    // so schema-v9 `tool_usage.turn_id` lets the analyzer reassemble multi-
+    // tool turns. Shape mirrors `helpers::derive_turn_id` (session:iteration
+    // for main, sub:<id>:session:iteration for sub-agents) so all id shapes
+    // in the tree stay consistent.
+    let dispatch_turn_id: String = {
+        let session = ctx.req.session_id.as_deref().unwrap_or("main");
+        match ctx.sub_id.as_deref() {
+            Some(sub) => format!("sub:{sub}:{session}:{iteration}"),
+            None => format!("{session}:{iteration}"),
+        }
+    };
+
     // Parallel fan-out for safe tools.
     let safe_futures = safe_indexed.into_iter().map(|(idx, call)| {
         let app_inner = app_ref.clone();
         let parent_session_inner = parent_session_for_calls.clone();
         let requesting_agent_inner = requesting_agent.clone();
         let reason_inner = reason.clone();
+        let turn_id_inner = dispatch_turn_id.clone();
         async move {
             let out = dispatch_tool(
                 &app_inner,
@@ -1070,6 +1174,7 @@ async fn run_staged_tools(ctx: &mut LoopCtx, iteration: u32) {
                 depth,
                 CONFIRM_TIMEOUT_SECS,
                 reason_inner.as_deref(),
+                Some(&turn_id_inner),
             )
             .await;
             (idx, call, out)
@@ -1089,6 +1194,7 @@ async fn run_staged_tools(ctx: &mut LoopCtx, iteration: u32) {
             depth,
             CONFIRM_TIMEOUT_SECS,
             reason.as_deref(),
+            Some(&dispatch_turn_id),
         )
         .await;
         dangerous_results.push((idx, call, out));
@@ -1173,6 +1279,14 @@ async fn run_staged_tools(ctx: &mut LoopCtx, iteration: u32) {
 /// bus — we don't re-emit here. The streaming turn's own terminal frame already
 /// carries done=true.
 async fn complete_main_turn(ctx: &LoopCtx, final_text: String) -> Result<String, String> {
+    crate::latency_harness::stage_marker(
+        crate::latency_harness::stages::TURN_END,
+        Some(serde_json::json!({
+            "total_ms": ctx.started.elapsed().as_millis() as u64,
+            "tools": ctx.tool_names_collected.clone(),
+            "path": "complete",
+        })),
+    );
     // Episodic run-breadcrumb is sync + fire-and-forget internally —
     // run it outside the join so it never contends for the tokio
     // runtime with the I/O-bound branches below.
@@ -1269,6 +1383,15 @@ async fn abort_turn(ctx: &LoopCtx, note: &str, partial: String) -> Result<String
         s if s.contains("max iterations") => "maxiter",
         _ => "error",
     };
+    crate::latency_harness::stage_marker(
+        crate::latency_harness::stages::TURN_END,
+        Some(serde_json::json!({
+            "total_ms": ctx.started.elapsed().as_millis() as u64,
+            "path": "abort",
+            "outcome": outcome,
+            "note": note,
+        })),
+    );
     write_run_episodic(&ctx.req.message, &ctx.tool_names_collected, outcome);
     let out = finalize_with_note(
         &ctx.app,
@@ -1696,10 +1819,10 @@ async fn pick_model(req: &ChatRequest, backend: Backend) -> String {
 /// Called from `startup::setup` as a detached `tokio::spawn` — errors
 /// are logged and swallowed. The synthetic ChatRequest uses empty
 /// fields and `provider = None`, so the heuristic router populates the
-/// cache in the same shape a no-override user turn would. If the user
-/// has an explicit provider pinned in Settings, their first real turn
-/// bypasses the cache anyway (see the `is_heuristic_route` gate in
-/// `prepare_context`), so there's no mismatch risk.
+/// `"auto"` pin bucket. If the user has an explicit provider pinned
+/// in Settings, their first real turn lands on a different cache
+/// bucket and will compute once — still cached from that turn onward,
+/// which is the primary gain from Fix 1.
 pub(crate) async fn warm_main_session_cache() {
     let started = Instant::now();
     let req = ChatRequest {
@@ -1711,10 +1834,12 @@ pub(crate) async fn warm_main_session_cache() {
         chat_mode: None,
     };
     let sid = "main";
-    match super::session_cache::get_backend_or_compute(sid, || pick_backend(&req)).await {
+    let pin = super::session_cache::normalize_provider_pin(req.provider.as_deref());
+    match super::session_cache::get_backend_or_compute(sid, pin, || pick_backend(&req)).await {
         Ok(backend) => {
             let model = super::session_cache::get_model_or_compute(
                 sid,
+                pin,
                 backend,
                 || pick_model(&req, backend),
             )

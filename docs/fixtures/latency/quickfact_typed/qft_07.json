@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "quickfact_typed",
+  "expected_tools": [],
+  "id": "qft_07",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Zero-tool LLM answer; measures prep_context + stream latency only.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "f42456c1e42075525ff8f8e6a3339afc7e703d7e55edcc6cc7f649ae0d75c758",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Give me a two-sentence summary of the CAP theorem.",
+  "write_severity": "read_only"
+}

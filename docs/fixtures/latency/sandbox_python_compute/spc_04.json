@@ -1,0 +1,28 @@
+{
+  "adversarial": false,
+  "category": "sandbox_python_compute",
+  "expected_tools": [
+    "sandbox_run_python"
+  ],
+  "id": "spc_04",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Sandboxed execution. Cold version: cold_pysandbox_first_spawn.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "bash_sandbox_warm": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "pysandbox_warm": true
+  },
+  "sha256": "4665498d0514241b76014940f139f4f0ebb58c0ebc0a5c6cff8b047a8fab92a3",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Solve x^2 - 4 = 0 numerically in python.",
+  "write_severity": "read_only"
+}

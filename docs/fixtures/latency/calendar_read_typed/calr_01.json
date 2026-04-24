@@ -1,0 +1,29 @@
+{
+  "adversarial": false,
+  "category": "calendar_read_typed",
+  "expected_tools": [
+    "calendar_today",
+    "calendar_upcoming"
+  ],
+  "id": "calr_01",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "same_session",
+  "notes": "Read-only EventKit. Assumes seeded calendar DB.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "calendar_permission": true,
+    "fixture_calendar_seeded": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "436a835778540d9d84c2e9ca31635898ceb11cc04cd5655ac37338cd866d8868",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "What's on my calendar today?",
+  "write_severity": "read_only"
+}

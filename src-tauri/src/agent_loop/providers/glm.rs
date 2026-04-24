@@ -207,6 +207,7 @@ pub async fn glm_turn(model: &str, system: &str, history: &[Value]) -> Result<Tu
             0,
             0,
         );
+        let total_ms = started.elapsed().as_millis() as u64;
         record_llm_turn(TelemetryEvent {
             provider: "glm".to_string(),
             model: model.to_string(),
@@ -214,10 +215,15 @@ pub async fn glm_turn(model: &str, system: &str, history: &[Value]) -> Result<Tu
             cache_read: 0,
             cache_create: 0,
             output: output_tok,
-            duration_ms: started.elapsed().as_millis() as u64,
+            duration_ms: total_ms,
             at: chrono::Utc::now().timestamp(),
             cost_usd,
             tier: None,    // K5 wires this via route_model; None until then
+            // Buffered path: whole response arrives as a single blob, so
+            // TTFT equals total duration and generate_ms is 0.
+            ttft_ms: Some(total_ms),
+            generate_ms: Some(0),
+            ..Default::default()
         });
     }
 
@@ -396,7 +402,7 @@ pub async fn glm_turn_streaming(
     }
 
     match drive_openai_sse_stream("glm", resp, &turn_id).await? {
-        OpenAiSseResult::Final { text, usage } => {
+        OpenAiSseResult::Final { text, usage, ttft_ms } => {
             publish(SunnyEvent::ChatChunk {
                 seq: 0,
                 boot_epoch: 0,
@@ -411,14 +417,16 @@ pub async fn glm_turn_streaming(
                 .and_then(|u| serde_json::from_value::<GlmUsage>(u.clone()).ok())
                 .map(|u| (u.prompt_tokens, u.completion_tokens))
                 .unwrap_or((0, 0));
+            let total_ms = started.elapsed().as_millis() as u64;
             log::info!(
                 "glm tokens: input={} output={} model={} duration_ms={}",
                 input_tok,
                 output_tok,
                 model,
-                started.elapsed().as_millis(),
+                total_ms,
             );
             let cost_usd = crate::telemetry::cost_estimate("glm", input_tok, output_tok, 0, 0);
+            let generate_ms = ttft_ms.map(|t| total_ms.saturating_sub(t));
             record_llm_turn(TelemetryEvent {
                 provider: "glm".to_string(),
                 model: model.to_string(),
@@ -426,10 +434,14 @@ pub async fn glm_turn_streaming(
                 cache_read: 0,
                 cache_create: 0,
                 output: output_tok,
-                duration_ms: started.elapsed().as_millis() as u64,
+                duration_ms: total_ms,
                 at: chrono::Utc::now().timestamp(),
                 cost_usd,
                 tier: None,
+                ttft_ms,
+                generate_ms,
+                turn_id: Some(turn_id.clone()),
+                ..Default::default()
             });
 
             Ok(TurnOutcome::Final { text, streamed: true })
@@ -444,7 +456,13 @@ pub async fn glm_turn_streaming(
 }
 
 pub(super) enum OpenAiSseResult {
-    Final { text: String, usage: Option<Value> },
+    /// `ttft_ms` is the wall-clock ms from stream start to the first
+    /// non-empty delta (content or reasoning_content). `None` when the
+    /// stream ended without ever producing user-visible text (e.g. a
+    /// tool-call short-circuit fired inside this frame, or the upstream
+    /// closed before emitting any delta). Providers fold this into the
+    /// persisted `TelemetryEvent`.
+    Final { text: String, usage: Option<Value>, ttft_ms: Option<u64> },
     ToolUseDetected,
 }
 
@@ -553,6 +571,16 @@ pub(super) async fn drive_openai_sse_stream(
                         "{provider_tag} ttft: {}ms (first delta)",
                         elapsed,
                     );
+                    // Latency-harness stage marker. No-op in production
+                    // (outside a RUN_CTX scope); emits a JSONL row in
+                    // harness runs so stage-level timing is auditable.
+                    crate::latency_harness::stage_marker(
+                        crate::latency_harness::stages::FIRST_TOKEN,
+                        Some(serde_json::json!({
+                            "provider": provider_tag,
+                            "ttft_ms": elapsed as u64,
+                        })),
+                    );
                 }
                 accumulated.push_str(&delta_str);
                 publish(SunnyEvent::ChatChunk {
@@ -605,6 +633,7 @@ pub(super) async fn drive_openai_sse_stream(
     Ok(OpenAiSseResult::Final {
         text: accumulated,
         usage: final_usage,
+        ttft_ms: ttft_ms.map(|v| v as u64),
     })
 }
 

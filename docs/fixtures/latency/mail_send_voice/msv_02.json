@@ -1,0 +1,33 @@
+{
+  "adversarial": false,
+  "category": "mail_send_voice",
+  "expected_tools": [
+    "contacts_lookup",
+    "mail_send"
+  ],
+  "id": "msv_02",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "same_session",
+  "notes": "External side effect. ConfirmGate MUST read back recipient+subject+body over voice.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "confirm_gate_required": true,
+    "contacts_permission": true,
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "mail_permission": true,
+    "ollama_warm": true,
+    "voice_confirm_must_readback": true
+  },
+  "sha256": "157ee097dd67800fc78954b43025d00ef6356a4836cea2afd7c9ec2e4cb1491a",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Send mom a quick 'happy birthday' email.",
+  "write_severity": "external_side_effect"
+}

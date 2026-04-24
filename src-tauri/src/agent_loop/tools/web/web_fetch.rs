@@ -36,7 +36,7 @@ fn invoke<'a>(_ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
 inventory::submit! {
     ToolSpec {
         name: "web_fetch",
-        description: "Fetch a URL and return readable text content.",
+        description: "Fetch a URL and return its readable text content (HTML parsed to plain text with scripts/styles/ads stripped; JSON pretty-printed). Use for article/doc pages or any GET returning human-readable content. Do NOT use for JSON APIs that need auth, custom headers, non-GET methods, or a body. Do NOT use for search (use web_search) or multi-source research (use deep_research). `max_chars` caps the returned text; over-cap output is truncated with a visible marker. The URL is SSRF-filtered on every hop — private/loopback/link-local/cloud-metadata hosts are refused, and the fetched body is scrubbed for prompt-injection before re-entering LLM context.",
         input_schema: SCHEMA,
         required_capabilities: CAPS,
         trust_class: TrustClass::ExternalRead,

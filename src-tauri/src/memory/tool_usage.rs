@@ -61,6 +61,11 @@ pub struct UsageRecord {
     /// for call sites that never see the model's reasoning (panic
     /// mode refusal, policy denial, confirm-gate decline, etc.).
     pub reason: Option<String>,
+    /// Cross-table FK to `llm_turns.turn_id`. Populated by the agent
+    /// loop for every tool dispatched as part of a model turn. `None`
+    /// for historical rows (pre-v9 migration) and for call sites that
+    /// run outside the agent loop (daemons, scheduler templates).
+    pub turn_id: Option<String>,
 }
 
 /// Aggregated stats for a single tool over the lookback window.
@@ -130,12 +135,27 @@ pub struct RecentOptions {
 /// `REASON_MAX_CHARS` so a chatty model can't balloon the audit row —
 /// the full content still survives in the `thinking` event on the
 /// in-memory step stream.
+/// Back-compat shim — preserves the 5-arg shape every caller in
+/// `agent_loop::dispatch` currently uses. Forwards to
+/// `record_with_turn` with `turn_id = None`. New call sites that know
+/// their turn_id should prefer the 6-arg variant.
 pub fn record(
     tool_name: &str,
     ok: bool,
     latency_ms: i64,
     error_msg: Option<&str>,
     reason: Option<&str>,
+) -> Result<(), String> {
+    record_with_turn(tool_name, ok, latency_ms, error_msg, reason, None)
+}
+
+pub fn record_with_turn(
+    tool_name: &str,
+    ok: bool,
+    latency_ms: i64,
+    error_msg: Option<&str>,
+    reason: Option<&str>,
+    turn_id: Option<&str>,
 ) -> Result<(), String> {
     if tool_name.trim().is_empty() {
         return Err("tool_usage: tool_name must not be empty".into());
@@ -172,14 +192,15 @@ pub fn record(
     });
     with_conn(|c| {
         c.execute(
-            "INSERT INTO tool_usage (tool_name, ok, latency_ms, error_msg, reason, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO tool_usage (tool_name, ok, latency_ms, error_msg, reason, turn_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 tool_name,
                 if ok { 1 } else { 0 },
                 latency_ms,
                 err_clipped,
                 reason_clipped,
+                turn_id,
                 now,
             ],
         )
@@ -429,7 +450,7 @@ pub fn recent(opts: RecentOptions) -> Result<Vec<UsageRecord>, String> {
 
     with_conn(|c| {
         let sql_base =
-            "SELECT id, tool_name, ok, latency_ms, error_msg, created_at, reason FROM tool_usage";
+            "SELECT id, tool_name, ok, latency_ms, error_msg, created_at, reason, turn_id FROM tool_usage";
         let mut parts: Vec<&str> = vec!["WHERE 1=1"];
         if opts.tool_name.is_some() {
             parts.push("AND tool_name = ?");
@@ -461,6 +482,7 @@ pub fn recent(opts: RecentOptions) -> Result<Vec<UsageRecord>, String> {
                     error_msg: r.get(4)?,
                     created_at: r.get(5)?,
                     reason: r.get(6)?,
+                    turn_id: r.get(7)?,
                 })
             })
             .map_err(|e| format!("query recent: {e}"))?

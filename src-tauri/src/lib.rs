@@ -16,6 +16,13 @@ mod metrics;
 // pub mod: re-exported for live integration tests in tests/live/ so the harness
 // can verify cost accounting without duplicating the per-provider rate constants.
 pub mod telemetry;
+/// Latency harness — Wave-2 testing rig for the 2 s SLA. Emits stage
+/// markers to `~/.sunny/latency/runs.jsonl` when a fixture is driven
+/// through the agent loop. No-op outside a harness scope, so
+/// production traffic is unaffected. `pub` so the providers +
+/// `agent_loop::core` can call `stage_marker` without a private-module
+/// re-export dance.
+pub mod latency_harness;
 mod http;
 mod ai;
 mod voice;
@@ -166,6 +173,11 @@ pub fn run() {
             commands::conversation_tail, commands::conversation_append, commands::conversation_prune_older_than,
             commands::conversation_list_sessions,
             telemetry::telemetry_llm_recent, telemetry::telemetry_llm_stats,
+            // Wave-2 latency harness. In debug builds this drives a fixture
+            // through `agent_run` and emits stage markers to
+            // `~/.sunny/latency/runs.jsonl`. In release builds the command
+            // resolves to a stub that returns an error.
+            latency_harness::latency_run_fixture,
             world::world_get,
             constitution::constitution_get, constitution::constitution_save, constitution::constitution_check,
             constitution::constitution_kick_append, constitution::constitution_kicks_count, constitution::constitution_kicks_recent,

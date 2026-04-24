@@ -43,15 +43,31 @@
 //! Backend and model are invalidated only via `invalidate_all` (for
 //! "forget everything" style commands). Their inputs — `ChatRequest.
 //! provider`, `ChatRequest.model`, and the keychain state — are stable
-//! across a session.
+//! across a session (the provider pin is part of the cache key, so a
+//! mid-session flip lands on a fresh entry rather than reusing a stale
+//! one).
 //!
 //! ## Memory bounds
 //!
 //! The cache map grows monotonically — one entry per distinct
-//! `session_id` ever seen. Sessions are bounded in practice (~10s per
-//! install: `main`, `voice`, `auto-<page>`, `daemon-<name>`) so no
-//! eviction pass is worth the complexity today. Mirrors the session-
-//! lock map policy.
+//! `(session_id, provider_pin)` pair ever seen. Sessions are bounded in
+//! practice (~10s per install: `main`, `voice`, `auto-<page>`,
+//! `daemon-<name>`) and the provider pin is a small fixed vocabulary
+//! ({"auto", "anthropic", "ollama", "glm", "kimi"}) so the composite is
+//! still bounded. Mirrors the session-lock map policy.
+//!
+//! ## Why key on provider instead of gating on heuristic route
+//!
+//! An earlier iteration skipped the cache entirely whenever the caller
+//! supplied an explicit provider override — `pick_backend` and
+//! `pick_model` (and the keychain probes inside `pick_backend`) ran
+//! every turn. That re-paid 50-150 ms of keychain subprocess on every
+//! turn for any user with a pinned provider in Settings. Including the
+//! provider pin in the key gives pinned users the same "compute once
+//! per session" behaviour as heuristic callers, while keeping
+//! mid-session provider flips correct: a flip produces a fresh cache
+//! entry (`"auto"` ≠ `"glm"` ≠ `"ollama"`) so the new turn recomputes
+//! from scratch instead of reusing a stale value for the wrong provider.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -109,46 +125,96 @@ pub struct SessionCache {
     pub model: Option<String>,
 }
 
-/// Map of `session_id -> Arc<Mutex<SessionCache>>`.
+/// Composite cache key: `(session_id, provider_pin)`.
+///
+/// `provider_pin` is the normalised caller-supplied provider hint —
+/// `"auto"` for `None` / empty / `"auto"` / unknown, otherwise the
+/// canonical lowercase backend name (`"anthropic"`, `"ollama"`,
+/// `"glm"`, `"kimi"`). Keeping it in the key means a mid-session flip
+/// from `"auto"` → `"glm"` gets a fresh cache entry instead of
+/// accidentally reusing the `"auto"` path's resolved backend.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CacheKey {
+    pub session_id: String,
+    pub provider_pin: &'static str,
+}
+
+/// Normalise a `ChatRequest.provider` string into the fixed vocabulary
+/// used as part of the cache key. The returned `&'static str` is safe
+/// to embed in the key — the vocabulary is closed, so there's no
+/// unbounded string churn.
+///
+/// Unknown / misspelled provider names fall back to `"auto"` because
+/// `pick_backend` itself falls through to heuristic routing in that
+/// case; keying the same bucket keeps the cache consistent with the
+/// router's actual behaviour.
+pub fn normalize_provider_pin(provider: Option<&str>) -> &'static str {
+    let raw = match provider {
+        Some(s) => s,
+        None => return "auto",
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "auto";
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let name = lower.strip_prefix("agent:").unwrap_or(&lower);
+    match name {
+        "anthropic" => "anthropic",
+        "ollama" => "ollama",
+        "glm" => "glm",
+        "kimi" => "kimi",
+        _ => "auto",
+    }
+}
+
+/// Map of `(session_id, provider_pin) -> Arc<Mutex<SessionCache>>`.
 ///
 /// The outer `std::sync::Mutex` is held only long enough to look up or
 /// insert an entry — NEVER across an `.await`. The inner
 /// `tokio::sync::Mutex` is what actually guards the cache cell; it's
 /// async so holders can `.await` (memory-digest build, keychain probe)
 /// while holding it.
-static SESSION_CACHES: Lazy<StdMutex<HashMap<String, Arc<Mutex<SessionCache>>>>> =
+static SESSION_CACHES: Lazy<StdMutex<HashMap<CacheKey, Arc<Mutex<SessionCache>>>>> =
     Lazy::new(|| StdMutex::new(HashMap::new()));
 
-/// Look up (or lazily create) the cache cell for `session_id`.
+/// Look up (or lazily create) the cache cell for `(session_id,
+/// provider_pin)`.
 ///
 /// Returns a cloned `Arc` — the caller is responsible for taking the
 /// inner lock. The outer map lock is released before this function
 /// returns so the caller's subsequent `.await` on the inner mutex is
 /// safe (holding a std lock across an await would risk deadlocks when
 /// tokio moves the task between workers).
-pub fn get_or_init(session_id: &str) -> Arc<Mutex<SessionCache>> {
+pub fn get_or_init(session_id: &str, provider_pin: &'static str) -> Arc<Mutex<SessionCache>> {
+    let key = CacheKey {
+        session_id: session_id.to_string(),
+        provider_pin,
+    };
     let mut map = SESSION_CACHES
         .lock()
         .expect("SESSION_CACHES poisoned — another thread panicked while holding it");
-    map.entry(session_id.to_string())
+    map.entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(SessionCache::default())))
         .clone()
 }
 
-/// Return the cached backend for `session_id`, or compute-and-cache.
+/// Return the cached backend for `(session_id, provider_pin)`, or
+/// compute-and-cache.
 ///
 /// `compute` is only awaited on a cache miss. Errors propagate — a
 /// failed compute does not poison the cache entry (it remains `None`
 /// so the next call will retry).
 pub async fn get_backend_or_compute<F, Fut>(
     session_id: &str,
+    provider_pin: &'static str,
     compute: F,
 ) -> Result<Backend, String>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Backend, String>>,
 {
-    let cell = get_or_init(session_id);
+    let cell = get_or_init(session_id, provider_pin);
     let mut guard = cell.lock().await;
     if let Some(b) = guard.backend {
         BACKEND_HITS.fetch_add(1, Ordering::Relaxed);
@@ -164,8 +230,8 @@ where
     Ok(backend)
 }
 
-/// Return the cached model string for `session_id`/`backend`, or
-/// compute-and-cache.
+/// Return the cached model string for `(session_id, provider_pin,
+/// backend)`, or compute-and-cache.
 ///
 /// `backend` is part of the effective key: if a caller ever switches
 /// backends mid-session (provider override), the cached model for the
@@ -173,6 +239,7 @@ where
 /// practice `pick_backend` is cached above so this branch rarely fires.
 pub async fn get_model_or_compute<F, Fut>(
     session_id: &str,
+    provider_pin: &'static str,
     backend: Backend,
     compute: F,
 ) -> String
@@ -180,7 +247,7 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = String>,
 {
-    let cell = get_or_init(session_id);
+    let cell = get_or_init(session_id, provider_pin);
     let mut guard = cell.lock().await;
 
     // If the backend flipped since we last computed the model, the
@@ -206,14 +273,28 @@ where
     model
 }
 
-/// Blow away every cached field for `session_id`. Used by "forget
-/// everything" style commands — a fresh turn will re-run backend
-/// routing and model pick from scratch.
+/// Blow away every cached field for every provider_pin under
+/// `session_id`. Used by "forget everything" style commands — a fresh
+/// turn will re-run backend routing and model pick from scratch.
+///
+/// Iterates the outer map because the composite key means a single
+/// session may have multiple live entries (one per pinned provider
+/// the user has exercised during the session).
 pub async fn invalidate_all(session_id: &str) {
-    let cell = get_or_init(session_id);
-    let mut guard = cell.lock().await;
-    guard.backend = None;
-    guard.model = None;
+    let cells: Vec<Arc<Mutex<SessionCache>>> = {
+        let map = SESSION_CACHES
+            .lock()
+            .expect("SESSION_CACHES poisoned — another thread panicked while holding it");
+        map.iter()
+            .filter(|(k, _)| k.session_id == session_id)
+            .map(|(_, v)| v.clone())
+            .collect()
+    };
+    for cell in cells {
+        let mut guard = cell.lock().await;
+        guard.backend = None;
+        guard.model = None;
+    }
 }
 
 #[cfg(test)]
@@ -229,7 +310,7 @@ mod tests {
         invalidate_all(sid).await;
 
         let c1 = calls.clone();
-        let b1 = get_backend_or_compute(sid, || async move {
+        let b1 = get_backend_or_compute(sid, "auto", || async move {
             c1.fetch_add(1, Ordering::SeqCst);
             Ok::<_, String>(Backend::Ollama)
         })
@@ -237,7 +318,7 @@ mod tests {
         .unwrap();
 
         let c2 = calls.clone();
-        let b2 = get_backend_or_compute(sid, || async move {
+        let b2 = get_backend_or_compute(sid, "auto", || async move {
             c2.fetch_add(1, Ordering::SeqCst);
             Ok::<_, String>(Backend::Anthropic) // would-be new value
         })
@@ -256,14 +337,14 @@ mod tests {
         invalidate_all(sid).await;
 
         let c1 = calls.clone();
-        let m1 = get_model_or_compute(sid, Backend::Ollama, || async move {
+        let m1 = get_model_or_compute(sid, "auto", Backend::Ollama, || async move {
             c1.fetch_add(1, Ordering::SeqCst);
             "llama3:8b".to_string()
         })
         .await;
 
         let c2 = calls.clone();
-        let m2 = get_model_or_compute(sid, Backend::Anthropic, || async move {
+        let m2 = get_model_or_compute(sid, "auto", Backend::Anthropic, || async move {
             c2.fetch_add(1, Ordering::SeqCst);
             "claude-sonnet".to_string()
         })
@@ -278,10 +359,12 @@ mod tests {
     async fn invalidate_all_clears_backend_and_model() {
         let sid = "test-invalidate-all";
         // Seed cache
-        let _ = get_backend_or_compute(sid, || async { Ok::<_, String>(Backend::Ollama) })
-            .await
-            .unwrap();
-        let _ = get_model_or_compute(sid, Backend::Ollama, || async {
+        let _ = get_backend_or_compute(sid, "auto", || async {
+            Ok::<_, String>(Backend::Ollama)
+        })
+        .await
+        .unwrap();
+        let _ = get_model_or_compute(sid, "auto", Backend::Ollama, || async {
             "llama3:8b".to_string()
         })
         .await;
@@ -291,7 +374,7 @@ mod tests {
         // Next call must recompute — prove it by counting compute invocations.
         let calls = Arc::new(AtomicU32::new(0));
         let c = calls.clone();
-        let _ = get_backend_or_compute(sid, || async move {
+        let _ = get_backend_or_compute(sid, "auto", || async move {
             c.fetch_add(1, Ordering::SeqCst);
             Ok::<_, String>(Backend::Anthropic)
         })
@@ -301,6 +384,115 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "invalidate_all must clear the backend cache"
+        );
+    }
+
+    /// Pinning `glm` then `ollama` on the same `session_id` MUST produce
+    /// two independent cache entries so the glm-resolved backend can
+    /// never be served to the ollama-pinned turn (or vice versa). Also
+    /// the glm-pinned path must be cached after the first turn —
+    /// that's the whole point of Fix 1.
+    #[tokio::test]
+    async fn pinned_providers_get_independent_cache_entries() {
+        let calls_glm = Arc::new(AtomicU32::new(0));
+        let calls_ollama = Arc::new(AtomicU32::new(0));
+        let sid = "test-pinned-providers";
+        invalidate_all(sid).await;
+
+        // First glm pin computes.
+        let c1 = calls_glm.clone();
+        let b1 = get_backend_or_compute(sid, "glm", || async move {
+            c1.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, String>(Backend::Glm)
+        })
+        .await
+        .unwrap();
+
+        // Second glm pin hits cache.
+        let c2 = calls_glm.clone();
+        let b2 = get_backend_or_compute(sid, "glm", || async move {
+            c2.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, String>(Backend::Anthropic) // would-be new value
+        })
+        .await
+        .unwrap();
+
+        // Flip to ollama: fresh compute (separate key).
+        let c3 = calls_ollama.clone();
+        let b3 = get_backend_or_compute(sid, "ollama", || async move {
+            c3.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, String>(Backend::Ollama)
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(b1, Backend::Glm);
+        assert_eq!(b2, Backend::Glm, "glm pin must return cached value");
+        assert_eq!(b3, Backend::Ollama, "ollama pin must not see glm's cache");
+        assert_eq!(calls_glm.load(Ordering::SeqCst), 1);
+        assert_eq!(calls_ollama.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn normalize_provider_pin_collapses_aliases_into_fixed_vocab() {
+        assert_eq!(normalize_provider_pin(None), "auto");
+        assert_eq!(normalize_provider_pin(Some("")), "auto");
+        assert_eq!(normalize_provider_pin(Some("   ")), "auto");
+        assert_eq!(normalize_provider_pin(Some("auto")), "auto");
+        assert_eq!(normalize_provider_pin(Some("AUTO")), "auto");
+        assert_eq!(normalize_provider_pin(Some("GLM")), "glm");
+        assert_eq!(normalize_provider_pin(Some("agent:glm")), "glm");
+        assert_eq!(normalize_provider_pin(Some("agent:ollama")), "ollama");
+        assert_eq!(normalize_provider_pin(Some("anthropic")), "anthropic");
+        assert_eq!(normalize_provider_pin(Some("kimi")), "kimi");
+        // Unknown names fall back to `"auto"` so the cache bucket
+        // matches the router's own fall-through behaviour.
+        assert_eq!(normalize_provider_pin(Some("gpt-9000")), "auto");
+    }
+
+    /// `invalidate_all` must clear EVERY provider_pin entry for the
+    /// session, not just the first one it happens to hit. Otherwise a
+    /// "forget everything" command would leave stale backend/model
+    /// values under a different pin.
+    #[tokio::test]
+    async fn invalidate_all_clears_every_provider_pin() {
+        let sid = "test-invalidate-all-across-pins";
+        invalidate_all(sid).await;
+
+        // Seed three different pinned-provider entries.
+        let _ = get_backend_or_compute(sid, "auto", || async {
+            Ok::<_, String>(Backend::Ollama)
+        })
+        .await
+        .unwrap();
+        let _ = get_backend_or_compute(sid, "glm", || async {
+            Ok::<_, String>(Backend::Glm)
+        })
+        .await
+        .unwrap();
+        let _ = get_backend_or_compute(sid, "anthropic", || async {
+            Ok::<_, String>(Backend::Anthropic)
+        })
+        .await
+        .unwrap();
+
+        invalidate_all(sid).await;
+
+        // Every entry must now recompute.
+        let calls = Arc::new(AtomicU32::new(0));
+        for pin in ["auto", "glm", "anthropic"] {
+            let c = calls.clone();
+            let _ = get_backend_or_compute(sid, pin, || async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(Backend::Ollama)
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "every provider_pin entry must have been invalidated"
         );
     }
 }

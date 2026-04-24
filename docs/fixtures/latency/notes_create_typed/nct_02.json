@@ -1,0 +1,28 @@
+{
+  "adversarial": false,
+  "category": "notes_create_typed",
+  "expected_tools": [
+    "notes_search",
+    "notes_append"
+  ],
+  "id": "nct_02",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Notes app (AppleScript). Reversible \u2014 no ConfirmGate.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "notes_permission": true,
+    "ollama_warm": true
+  },
+  "sha256": "091998d83b16dee0e77ad5dab15c2f8ff66d4f300b471dad554f9c876d5084db",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Append 'Call the plumber about the leaky faucet' to today's scratch note.",
+  "write_severity": "reversible_write"
+}

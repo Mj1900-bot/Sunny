@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "multi_tool_research_typed",
+  "expected_tools": [
+    "web_search",
+    "web_fetch",
+    "memory_remember"
+  ],
+  "id": "mrt_06",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "same_session",
+  "notes": "Multi-tool chain \u2014 search narrows URLs, fetch reads one, remember persists distilled facts.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "allow_network": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "memory_index_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "47e9d2caeca5a92df8802b138833dde133532345e664bab903202d08ce2f1b15",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "typed_hud",
+  "user_message": "Find the top three open issues on servo/servo and save their titles.",
+  "write_severity": "reversible_write"
+}

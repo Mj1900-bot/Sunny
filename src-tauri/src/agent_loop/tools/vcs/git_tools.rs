@@ -19,7 +19,7 @@ use crate::agent_loop::catalog::TrustClass;
 use crate::agent_loop::helpers::{optional_string_arg, string_arg};
 use crate::agent_loop::tool_trait::{ToolCtx, ToolFuture, ToolSpec};
 
-use super::allowlist::check_url;
+use super::allowlist::{check_clone_target_dir, check_url};
 use super::git_ops;
 use super::push_guard::check_push_target;
 
@@ -209,7 +209,13 @@ fn git_clone_invoke<'a>(_ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
         let url = string_arg(&input, "url")?;
         let target_dir = string_arg(&input, "target_dir")?;
 
+        // Positive allowlists — host (url) AND destination (target_dir).
+        // ConfirmGate is still the user-facing gate for dangerous: true,
+        // but these refuse outright before the user is asked, so a
+        // prompt-injected sub-agent can't escape to `~/.ssh` or `~/Library`
+        // even if the user misreads the ConfirmGate modal.
         check_url(&url)?;
+        check_clone_target_dir(&target_dir)?;
 
         git2::Repository::clone(&url, &target_dir)
             .map_err(|e| format!("git_clone: {e}"))?;
@@ -221,7 +227,7 @@ fn git_clone_invoke<'a>(_ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
 inventory::submit! {
     ToolSpec {
         name: "git_clone",
-        description: "Clone a remote repository to a local directory. Remote host must be in the allowed_repo_hosts list in ~/.sunny/grants.json (default: github.com, gitlab.com). L3 — writes to disk, confirm-gated.",
+        description: "Clone a remote repository to a local directory. Two allowlists must pass: the remote host must be in allowed_repo_hosts (default: github.com, gitlab.com), and target_dir must be under an allowed_clone_dirs prefix (default: $HOME/Projects, $HOME/src, $HOME/code, $HOME/workspace). Forbidden segments (.ssh, Library, .aws, etc.) are refused even if a prefix would otherwise admit them. Both lists live in ~/.sunny/grants.json. L3 — writes to disk, confirm-gated.",
         input_schema: CLONE_SCHEMA,
         required_capabilities: &["vcs.write"],
         trust_class: TrustClass::ExternalWrite,

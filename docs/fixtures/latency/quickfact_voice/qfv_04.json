@@ -1,0 +1,25 @@
+{
+  "adversarial": false,
+  "category": "quickfact_voice",
+  "expected_tools": [],
+  "id": "qfv_04",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Kokoro must stream first audio <= 2000ms. Pre-requires kokoro_warm.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "dadaf0e1c44555e26943a5d0116881f7727ec170a3edbe33bd53e3b802b2a48d",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "voice_cpal",
+  "user_message": "How do you pronounce 'croissant'?",
+  "write_severity": "read_only"
+}

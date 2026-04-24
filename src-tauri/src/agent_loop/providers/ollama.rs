@@ -163,6 +163,7 @@ pub async fn ollama_turn(
     // Record a zero-token telemetry turn so the turn *count* still
     // reflects reality — BrainPage treats zero-input turns as
     // "unmeasured input" rather than silently dropping them.
+    let total_ms = started.elapsed().as_millis() as u64;
     record_llm_turn(TelemetryEvent {
         provider: "ollama".to_string(),
         model: model.to_string(),
@@ -170,10 +171,14 @@ pub async fn ollama_turn(
         cache_read: 0,
         cache_create: 0,
         output: 0,
-        duration_ms: started.elapsed().as_millis() as u64,
+        duration_ms: total_ms,
         at: chrono::Utc::now().timestamp(),
         cost_usd: 0.0, // Ollama is local — no billing
         tier: None,    // K5 wires this via route_model; None until then
+        // Buffered (non-streaming) path: TTFT == total duration.
+        ttft_ms: Some(total_ms),
+        generate_ms: Some(0),
+        ..Default::default()
     });
 
     let msg = parsed.message.unwrap_or(OllamaMessage {
@@ -238,28 +243,39 @@ pub async fn ollama_turn(
 /// (sub_id == None) should call this — sub-agent replies are piped back
 /// as tool results and the user shouldn't see their token stream.
 ///
-/// If any NDJSON frame carries `message.tool_calls` we abort streaming
-/// and re-issue a non-streaming request. Ollama emits tool calls in a
-/// single frame with `done: true`, so detection + fallback is simple —
-/// and the re-issue cost is tolerable because tool turns are rare on the
-/// voice path (which is the primary beneficiary of streaming).
+/// Tool-call handling (Bottleneck D fix, 2026-04):
+///   Ollama emits tool_calls in the *terminal* NDJSON frame (done: true),
+///   but intermediate frames may still carry `message.content` /
+///   `message.thinking` deltas that we want to publish for TTFT. Before
+///   this fix, any non-empty tool catalog (which the agent loop always
+///   registers) short-circuited the whole streaming path back to the
+///   buffered `ollama_turn`, killing TTFT on every local turn. Now we
+///   drive the stream regardless and, when the terminal frame carries
+///   tool_calls, accumulate them into `TurnOutcome::Tools` without a
+///   second round-trip to /api/chat.
+///
+/// Escape hatch: `SUNNY_OLLAMA_STREAM_TOOLS=0` reverts to the legacy
+/// buffered-for-tools behaviour so a specific model that regresses
+/// (e.g. emits partial tool_call JSON piecewise across frames instead
+/// of in one terminal frame) can be worked around without a recompile.
 pub async fn ollama_turn_streaming(
     app: &AppHandle,
     model: &str,
     system: &str,
     history: &[Value],
 ) -> Result<TurnOutcome, String> {
-    // Short-circuit: Ollama always emits tool_calls in the *terminal* NDJSON
-    // frame (done: true), so the streaming path adds zero value for tool
-    // turns — we'd just receive empty content deltas and then detect tool_calls
-    // in the terminal frame, abort the stream, and re-issue the exact same
-    // request non-streaming. Skip the double-request: when the tool catalog
-    // is non-empty (which it always is in the agent loop), delegate directly
-    // to the buffered ollama_turn which handles tool_calls correctly in one pass.
+    // Legacy short-circuit, opt-in via env var. Defaults to ON (i.e. use
+    // the new streaming-with-tools path) because the measured cost of the
+    // old branch is 5-47 s of hidden latency on every turn — structurally
+    // incompatible with the 2 s voice SLA.
     let has_tools = !openai_chat_tools_catalog().is_empty();
-    if has_tools {
+    let stream_with_tools = std::env::var("SUNNY_OLLAMA_STREAM_TOOLS")
+        .ok()
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "off" | ""))
+        .unwrap_or(true);
+    if has_tools && !stream_with_tools {
         log::debug!(
-            "ollama_turn_streaming: tools non-empty — skipping streaming, delegating to ollama_turn"
+            "ollama_turn_streaming: SUNNY_OLLAMA_STREAM_TOOLS disabled — delegating to ollama_turn"
         );
         return ollama_turn(model, system, history).await;
     }
@@ -312,7 +328,7 @@ pub async fn ollama_turn_streaming(
     }
 
     match drive_ndjson_stream(app, resp, &turn_id).await? {
-        NdjsonResult::Final { text } => {
+        NdjsonResult::Final { text, ttft_ms } => {
             // MIGRATED sprint-9 → bus push channel only
             publish(SunnyEvent::ChatChunk {
                 turn_id: turn_id.clone(),
@@ -325,6 +341,8 @@ pub async fn ollama_turn_streaming(
             // Ollama streaming doesn't surface token counts — we
             // record a zero-token turn so BrainPage's turn count
             // and latency tracking still reflect local traffic.
+            let total_ms = started.elapsed().as_millis() as u64;
+            let generate_ms = ttft_ms.map(|t| total_ms.saturating_sub(t));
             record_llm_turn(TelemetryEvent {
                 provider: "ollama".to_string(),
                 model: model.to_string(),
@@ -332,20 +350,94 @@ pub async fn ollama_turn_streaming(
                 cache_read: 0,
                 cache_create: 0,
                 output: 0,
-                duration_ms: started.elapsed().as_millis() as u64,
+                duration_ms: total_ms,
                 at: chrono::Utc::now().timestamp(),
                 cost_usd: 0.0, // Ollama is local — no billing
                 tier: None,    // K5 wires this via route_model; None until then
+                ttft_ms,
+                generate_ms,
+                turn_id: Some(turn_id.clone()),
+                ..Default::default()
             });
             Ok(TurnOutcome::Final { text, streamed: true })
         }
-        NdjsonResult::ToolUseDetected => {
-            log::info!(
-                "ollama_turn_streaming: tool_calls detected, falling back to non-streaming"
-            );
-            // The fallback path reissues the request non-streaming
-            // and `ollama_turn` will record its own telemetry event.
-            ollama_turn(model, system, history).await
+        NdjsonResult::ToolCalls {
+            content,
+            thinking,
+            raw,
+            ttft_ms,
+        } => {
+            // Finalise the chat surface — even if no content deltas were
+            // emitted (the model went straight to a tool call with no
+            // narration), the frontend expects a terminal done frame per
+            // turn_id to tear down the streaming indicator.
+            publish(SunnyEvent::ChatChunk {
+                turn_id: turn_id.clone(),
+                delta: String::new(),
+                done: true,
+                at: chrono::Utc::now().timestamp_millis(),
+                seq: 0,
+                boot_epoch: 0,
+            });
+            let total_ms = started.elapsed().as_millis() as u64;
+            let generate_ms = ttft_ms.map(|t| total_ms.saturating_sub(t));
+            record_llm_turn(TelemetryEvent {
+                provider: "ollama".to_string(),
+                model: model.to_string(),
+                input: 0,
+                cache_read: 0,
+                cache_create: 0,
+                output: 0,
+                duration_ms: total_ms,
+                at: chrono::Utc::now().timestamp(),
+                cost_usd: 0.0,
+                tier: None,
+                ttft_ms,
+                generate_ms,
+                turn_id: Some(turn_id.clone()),
+                ..Default::default()
+            });
+
+            // Normalise tool_calls into the crate's ToolCall shape — same
+            // logic as ollama_turn's buffered path. Ollama may serialise
+            // arguments as a JSON-encoded string or an object; accept both.
+            let mut calls: Vec<ToolCall> = Vec::with_capacity(raw.len());
+            for (i, tc) in raw.into_iter().enumerate() {
+                let input = match tc.function.arguments {
+                    Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::Null),
+                    other => other,
+                };
+                calls.push(ToolCall {
+                    id: format!("ollama-{i}"),
+                    name: tc.function.name,
+                    input,
+                });
+            }
+
+            // Echo the exact wire shape Ollama expects on the next turn
+            // so the /api/chat round-trip stays clean.
+            let assistant_message = json!({
+                "role": "assistant",
+                "content": content,
+                "tool_calls": calls_to_ollama_repr(&calls),
+            });
+
+            // Prefer visible content for the UI narration slot; fall back
+            // to thinking so agent.step isn't blank on a thinking-mode
+            // model that went straight to a tool call.
+            let thinking_out = if !content.trim().is_empty() {
+                Some(content)
+            } else if !thinking.trim().is_empty() {
+                Some(thinking)
+            } else {
+                None
+            };
+
+            Ok(TurnOutcome::Tools {
+                thinking: thinking_out,
+                calls,
+                assistant_message,
+            })
         }
     }
 }
@@ -827,11 +919,32 @@ async fn list_ollama_models() -> Result<Vec<String>, String> {
 enum NdjsonResult {
     /// Clean end-of-stream. `text` is the concatenation of every
     /// `message.content` (or `message.thinking` fallback) delta.
-    Final { text: String },
-    /// A frame carried `message.tool_calls`. The caller re-issues the
-    /// request non-streaming so the existing buffered path handles the
-    /// assistant_message assembly + dispatch.
-    ToolUseDetected,
+    /// `ttft_ms` is the wall-clock ms from driver entry to the first
+    /// non-empty delta; `None` when the stream ended without emitting
+    /// user-visible text.
+    Final { text: String, ttft_ms: Option<u64> },
+    /// The terminal frame carried `message.tool_calls`. Ollama emits all
+    /// tool_calls atomically in the terminal (done: true) frame, so by
+    /// the time we see any tool_calls entry we have the complete set.
+    /// Intermediate frames before the terminal one may still have emitted
+    /// `content` / `thinking` deltas; those are captured here so the
+    /// caller can echo them as `assistant_message.content` / narration.
+    ToolCalls {
+        /// Concatenation of `message.content` deltas (user-visible narration).
+        content: String,
+        /// Concatenation of `message.thinking` deltas, wrapped in
+        /// `<think>…</think>` tags by the parser the same way the Final
+        /// variant does. Used as a fallback narration source when
+        /// `content` is empty (straight-to-tool-call behaviour).
+        thinking: String,
+        /// Raw tool_calls from the terminal frame, preserved for
+        /// normalisation by the caller (it already has the ToolCall
+        /// conversion + argument-shape tolerance in one place).
+        raw: Vec<OllamaToolCall>,
+        /// Same TTFT semantics as `Final`. Non-None only when at least
+        /// one content/thinking delta landed before the terminal frame.
+        ttft_ms: Option<u64>,
+    },
 }
 
 /// Pull bytes off the wire, split on newlines, parse each line as a
@@ -839,6 +952,15 @@ enum NdjsonResult {
 /// one JSON object per line, separated by `\n`. Each object looks like
 /// `{"model": "...", "message": {"role": "assistant", "content": "<token>"}, "done": false}`
 /// with a terminal frame carrying `"done": true`.
+///
+/// Bottleneck D fix: content + thinking deltas are accumulated into
+/// `content_buf` / `thinking_buf` independently, so that if the terminal
+/// frame turns out to carry tool_calls we can still hand the caller the
+/// partial narration (rare — most tool-call turns have empty content —
+/// but the model sometimes says "Let me check your calendar…" before
+/// emitting the call). The accumulated `text` field in `Final` keeps
+/// the legacy shape (content + `<think>`-wrapped thinking concatenated
+/// as they landed) so the final-answer path is byte-identical to before.
 async fn drive_ndjson_stream(
     _app: &AppHandle,
     resp: reqwest::Response,
@@ -846,9 +968,18 @@ async fn drive_ndjson_stream(
 ) -> Result<NdjsonResult, String> {
     use futures_util::StreamExt;
 
+    let stream_started = Instant::now();
+    let mut ttft_ms: Option<u64> = None;
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    // `accumulated` is the chronological concatenation of every delta
+    // (content + <think>-wrapped thinking) — the legacy "Final.text"
+    // shape. `content_buf` / `thinking_buf` track the split streams
+    // for the tool-call path, where only one of the two is usually the
+    // narration slot the caller wants.
     let mut accumulated = String::new();
+    let mut content_buf = String::new();
+    let mut thinking_buf = String::new();
     let mut was_thinking = false;
 
     while let Some(chunk) = stream.next().await {
@@ -877,15 +1008,42 @@ async fn drive_ndjson_stream(
                 }
             };
 
-            // Tool-call short-circuit: if this frame carries any
-            // tool_calls at all, bail and let ollama_turn reissue.
-            if payload
+            // Tool-call detection. Ollama emits tool_calls atomically in
+            // the terminal (done: true) frame, so the entire tool_calls
+            // array is available here. Decode into `OllamaToolCall` via
+            // serde so the caller gets the same shape the buffered path
+            // has always produced, then return with whatever content /
+            // thinking had already been streamed (usually none, but a
+            // narrating model may have said "Let me check that…" first).
+            if let Some(arr) = payload
                 .get("message")
                 .and_then(|m| m.get("tool_calls"))
                 .and_then(|tc| tc.as_array())
-                .is_some_and(|arr| !arr.is_empty())
+                .filter(|arr| !arr.is_empty())
             {
-                return Ok(NdjsonResult::ToolUseDetected);
+                let raw: Vec<OllamaToolCall> = arr
+                    .iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+                // Close any open <think> block the frontend is tracking
+                // so the streaming UI doesn't show a dangling indicator.
+                if was_thinking {
+                    publish(SunnyEvent::ChatChunk {
+                        turn_id: turn_id.to_string(),
+                        delta: "\n</think>\n".to_string(),
+                        done: false,
+                        at: chrono::Utc::now().timestamp_millis(),
+                        seq: 0,
+                        boot_epoch: 0,
+                    });
+                    thinking_buf.push_str("\n</think>\n");
+                }
+                return Ok(NdjsonResult::ToolCalls {
+                    content: content_buf,
+                    thinking: thinking_buf,
+                    raw,
+                    ttft_ms,
+                });
             }
 
             // Stream the content delta. Thinking-mode models emit prose
@@ -898,17 +1056,33 @@ async fn drive_ndjson_stream(
                 if !was_thinking {
                     was_thinking = true;
                     delta_str.push_str("<think>\n");
+                    thinking_buf.push_str("<think>\n");
                 }
                 delta_str.push_str(t);
+                thinking_buf.push_str(t);
             } else if let Some(c) = msg.and_then(|m| m.get("content")).and_then(|c| c.as_str()).filter(|s| !s.is_empty()) {
                 if was_thinking {
                     was_thinking = false;
                     delta_str.push_str("\n</think>\n");
+                    thinking_buf.push_str("\n</think>\n");
                 }
                 delta_str.push_str(c);
+                content_buf.push_str(c);
             }
 
             if !delta_str.is_empty() {
+                if ttft_ms.is_none() {
+                    let elapsed = stream_started.elapsed().as_millis() as u64;
+                    ttft_ms = Some(elapsed);
+                    log::info!("ollama ttft: {elapsed}ms (first delta)");
+                    crate::latency_harness::stage_marker(
+                        crate::latency_harness::stages::FIRST_TOKEN,
+                        Some(serde_json::json!({
+                            "provider": "ollama",
+                            "ttft_ms": elapsed,
+                        })),
+                    );
+                }
                 accumulated.push_str(&delta_str);
                 // MIGRATED sprint-9 → bus push channel only
                 publish(SunnyEvent::ChatChunk {
@@ -929,6 +1103,7 @@ async fn drive_ndjson_stream(
             {
                 if was_thinking {
                     accumulated.push_str("\n</think>\n");
+                    thinking_buf.push_str("\n</think>\n");
                     // MIGRATED sprint-9 → bus push channel only
                     publish(SunnyEvent::ChatChunk {
                         turn_id: turn_id.to_string(),
@@ -939,7 +1114,7 @@ async fn drive_ndjson_stream(
                         boot_epoch: 0,
                     });
                 }
-                return Ok(NdjsonResult::Final { text: accumulated });
+                return Ok(NdjsonResult::Final { text: accumulated, ttft_ms });
             }
         }
     }
@@ -947,6 +1122,7 @@ async fn drive_ndjson_stream(
     log::warn!("ollama NDJSON: stream closed without done=true");
     if was_thinking {
         accumulated.push_str("\n</think>\n");
+        thinking_buf.push_str("\n</think>\n");
         // MIGRATED sprint-9 → bus push channel only
         publish(SunnyEvent::ChatChunk {
             turn_id: turn_id.to_string(),
@@ -957,7 +1133,7 @@ async fn drive_ndjson_stream(
             boot_epoch: 0,
         });
     }
-    Ok(NdjsonResult::Final { text: accumulated })
+    Ok(NdjsonResult::Final { text: accumulated, ttft_ms })
 }
 
 /// Re-serialise our normalised tool calls back into Ollama's wire
@@ -1124,8 +1300,13 @@ mod tests {
         assert_eq!(out.delta, None);
     }
 
-    /// Any tool_calls array short-circuits — caller re-issues
-    /// non-streaming via `ollama_turn`.
+    /// Any tool_calls array flags the frame; the live driver then
+    /// returns `NdjsonResult::ToolCalls` to the caller with the partial
+    /// content + raw tool_calls so `ollama_turn_streaming` can assemble
+    /// `TurnOutcome::Tools` without a second round-trip. Prior to the
+    /// Bottleneck D fix this flagged a non-streaming re-issue via
+    /// `ollama_turn`; the classifier contract (tool_use: true, no delta)
+    /// is unchanged.
     #[test]
     fn tool_calls_frame_triggers_short_circuit() {
         let frame = json!({

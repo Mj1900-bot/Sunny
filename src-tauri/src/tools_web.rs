@@ -385,6 +385,15 @@ fn validate_http_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Crate-internal re-export of `validate_http_url_async` so tools
+/// outside this module (e.g. `agent_loop::tools::net::http_request`)
+/// can reuse the exact same SSRF gate without reimplementing it.
+/// Any crate-internal HTTP tool that takes an LLM-controlled URL must
+/// call this before handing the request to `crate::http::send`.
+pub(crate) async fn validate_public_http_url(url: &str) -> Result<(), String> {
+    validate_http_url_async(url).await
+}
+
 /// Full async validation: scheme + literal-IP check + DNS resolution
 /// check. All production request paths call this before every HTTP
 /// hop (including after redirects).

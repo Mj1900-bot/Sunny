@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "calendar_write_voice",
+  "expected_tools": [
+    "calendar_create_event"
+  ],
+  "id": "calw_02",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "none",
+  "notes": "ConfirmGate with 'Friday' resolved to next Friday. ConfirmGate over voice \u2014 fixture does NOT auto-run; harness stubs confirm.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "calendar_permission": true,
+    "confirm_gate_required": true,
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "6aa3eda664a8642dcd0bc958bb950b1af76bab7ce8d1d2323ccd16ff746c2345",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Schedule a dentist appointment Friday at 9am.",
+  "write_severity": "reversible_write"
+}

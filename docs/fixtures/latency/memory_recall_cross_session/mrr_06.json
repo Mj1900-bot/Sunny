@@ -1,0 +1,31 @@
+{
+  "adversarial": false,
+  "category": "memory_recall_cross_session",
+  "expected_tools": [
+    "memory_recall"
+  ],
+  "id": "mrr_06",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "cross_session_semantic",
+  "notes": "Requires pre-seeded memory corpus across >=2 sessions >24h old.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "memory_index_warm": true,
+    "ollama_warm": true,
+    "requires_memory_facts": [
+      "seeded across >=2 prior sessions"
+    ],
+    "requires_sessions_older_than_hours": 24
+  },
+  "sha256": "df6738f46f604ebc7d390712a23dea5b63b3cd428664ab86ac7095e382eae1b4",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "What was the name of the contractor I mentioned two weeks ago?",
+  "write_severity": "read_only"
+}

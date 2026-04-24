@@ -25,7 +25,7 @@ fn invoke<'a>(_ctx: &'a ToolCtx<'a>, input: Value) -> ToolFuture<'a> {
 inventory::submit! {
     ToolSpec {
         name: "browser_open",
-        description: "Open a URL in Safari.",
+        description: "Open a URL in the user's real Safari (AppleScript-driven). SIDE EFFECT — pops a visible tab on the user's screen and may steal focus. Use only when the user explicitly says 'open in Safari' or 'open in my browser'. Do NOT use to read a page's content (use web_fetch for text, or browser_cdp_* for JS-heavy pages). Do NOT use to silently 'visit' a site to check it works. URL must be http/https. Triggers a dangerous-action ConfirmGate on first use.",
         input_schema: SCHEMA,
         required_capabilities: CAPS,
         trust_class: TrustClass::ExternalWrite,

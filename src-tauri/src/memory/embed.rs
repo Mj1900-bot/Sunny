@@ -222,13 +222,21 @@ pub fn start_backfill_loop() {
         let tick = Duration::from_secs(30);
         let batch = 8_usize;
         loop {
+            // Operator kill-switch — lets the user pause the batched
+            // catch-up walk (e.g. on battery, or when they want Ollama
+            // responsive for the voice loop). Per-row write-path
+            // embedding via `spawn_embed_for` still fires regardless.
+            if !crate::settings_store::get().memory.backfill_enabled {
+                tokio::time::sleep(tick).await;
+                continue;
+            }
             match tick_once(batch).await {
                 Ok(filled) => {
                     if filled > 0 {
-                        log::info!("backfill: embedded {filled} rows this tick");
+                        log::info!("[memory/backfill] embedded {filled} rows this tick");
                     }
                 }
-                Err(e) => log::debug!("backfill tick: {e}"),
+                Err(e) => log::debug!("[memory/backfill] tick: {e}"),
             }
             tokio::time::sleep(tick).await;
         }

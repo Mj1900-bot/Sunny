@@ -79,7 +79,6 @@ const VOICE_UNSAFE_TOOLS: &[&str] = &[
     "screen_capture",
     "screen_capture_full",
     "screen_capture_active_window",
-    "screen_capture_region",
     // agent_loop/tools/vision/
     "image_describe",
 ];
@@ -185,14 +184,13 @@ mod tests {
 
     #[test]
     fn is_voice_unsafe_flags_every_screen_capture_variant() {
-        // All four screen capture tools return base64 PNG payloads —
-        // Kokoro would read the raw bytes. Treat the list as a
-        // contract: if any variant is removed from the filter, the
-        // matching tool must also be removed from the agent's registry.
+        // Screen capture tools return base64 PNG payloads — Kokoro
+        // would read the raw bytes. Treat the list as a contract: if
+        // any variant is removed from the filter, the matching tool
+        // must also be removed from the agent's registry.
         assert!(is_voice_unsafe("screen_capture"));
         assert!(is_voice_unsafe("screen_capture_full"));
         assert!(is_voice_unsafe("screen_capture_active_window"));
-        assert!(is_voice_unsafe("screen_capture_region"));
     }
 
     #[test]

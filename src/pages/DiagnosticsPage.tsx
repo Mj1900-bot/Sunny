@@ -18,7 +18,7 @@
  * numbers throughout.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState, type ReactElement } from 'react';
 import { ModuleView } from '../components/ModuleView';
 import {
   PageGrid, PageCell, Section, Row, Chip, StatBlock, ScrollList,
@@ -133,6 +133,15 @@ export function DiagnosticsPage() {
           <ConstitutionSection diag={data?.constitution} />
         </PageCell>
 
+        {/* Wave-2 latency harness trigger — dev-only, gated by
+            debug_assertions on the backend. In release builds the
+            backend stub returns an error which the panel surfaces. */}
+        {import.meta.env.DEV && (
+          <PageCell span={12}>
+            <LatencyHarnessSection />
+          </PageCell>
+        )}
+
         {error && (
           <PageCell span={12}>
             <EmptyState
@@ -143,6 +152,109 @@ export function DiagnosticsPage() {
         )}
       </PageGrid>
     </ModuleView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Wave-2 latency harness — dev-only trigger
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape returned by the backend `latency_run_fixture` command. Kept local
+ * rather than emitted as a ts-rs binding because the harness is an
+ * operator-only surface and the shape is simple enough that a drift
+ * between backend + frontend would fail-fast in the JSON decode.
+ */
+interface RunSummary {
+  run_id: string;
+  fixture: string;
+  total_ms: number;
+  final_text: string | null;
+  error: string | null;
+  sink_path: string;
+}
+
+/**
+ * Dev-only trigger for the Wave-2 latency harness. Loads a fixture by
+ * name (relative to `~/.sunny/latency/fixtures/`) and drives it through
+ * the production agent loop. The JSONL sink at `sink_path` collects
+ * every stage marker for offline SLA analysis.
+ */
+function LatencyHarnessSection(): ReactElement {
+  const [fixture, setFixture] = useState<string>('basic.json');
+  const [running, setRunning] = useState(false);
+  const [last, setLast] = useState<RunSummary | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  const run = async (): Promise<void> => {
+    setRunning(true);
+    setRunError(null);
+    try {
+      const summary = await invokeSafe<RunSummary>('latency_run_fixture', {
+        fixturePath: fixture,
+      });
+      if (summary == null) {
+        setRunError('harness returned null (command rejected or release-build stub)');
+      } else {
+        setLast(summary);
+      }
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <Section title="LATENCY HARNESS · DEV ONLY">
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+        <input
+          type="text"
+          value={fixture}
+          onChange={(e) => setFixture(e.target.value)}
+          placeholder="fixture path (e.g. basic.json)"
+          style={{
+            flex: 1,
+            fontFamily: 'var(--mono)',
+            fontSize: 12,
+            padding: '6px 10px',
+            background: 'rgba(0,0,0,0.4)',
+            color: 'var(--cyan)',
+            border: '1px solid rgba(0,255,255,0.25)',
+            borderRadius: 4,
+          }}
+          disabled={running}
+        />
+        <button
+          onClick={() => { void run(); }}
+          disabled={running || fixture.trim().length === 0}
+          style={{
+            fontFamily: 'var(--mono)',
+            fontSize: 12,
+            padding: '6px 14px',
+            background: running ? 'rgba(255,193,7,0.15)' : 'rgba(0,255,255,0.15)',
+            color: running ? 'var(--amber)' : 'var(--cyan)',
+            border: `1px solid ${running ? 'var(--amber)' : 'var(--cyan)'}`,
+            borderRadius: 4,
+            cursor: running ? 'wait' : 'pointer',
+          }}
+        >
+          {running ? 'RUNNING…' : 'RUN FIXTURE'}
+        </button>
+      </div>
+      {runError && (
+        <Chip tone="red">harness error: {runError}</Chip>
+      )}
+      {last && !runError && (
+        <div style={{ display: 'grid', gap: 6 }}>
+          <Row label="run_id"    value={<span style={{ fontFamily: 'var(--mono)' }}>{last.run_id}</span>} />
+          <Row label="fixture"   value={<span style={{ fontFamily: 'var(--mono)' }}>{last.fixture}</span>} />
+          <Row label="total_ms"  value={<span style={{ fontFamily: 'var(--mono)', color: last.total_ms > 2000 ? 'var(--amber)' : 'var(--green)' }}>{last.total_ms} ms</span>} />
+          <Row label="sink"      value={<span style={{ fontFamily: 'var(--mono)', fontSize: 11, opacity: 0.7 }}>{last.sink_path}</span>} />
+          {last.error && <Row label="error" value={<span style={{ color: 'var(--red)' }}>{last.error}</span>} />}
+        </div>
+      )}
+    </Section>
   );
 }
 

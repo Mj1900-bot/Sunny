@@ -1,0 +1,29 @@
+{
+  "adversarial": false,
+  "category": "screen_capture_typed_only",
+  "expected_tools": [
+    "screen_read_active_window",
+    "screen_capture",
+    "ocr_image_file"
+  ],
+  "id": "scrc_03",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Typed-only. Voice-triggered screen capture disabled \u2014 see adv_voice_screen_capture_race.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "screen_recording_permission": true
+  },
+  "sha256": "5a897888ccd6f97b23cef4015363bd8d5e0cfc7a66789ae5ebd89c968223e017",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Screenshot the front window and OCR it.",
+  "write_severity": "reversible_write"
+}

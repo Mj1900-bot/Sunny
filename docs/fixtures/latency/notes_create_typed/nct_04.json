@@ -1,0 +1,28 @@
+{
+  "adversarial": false,
+  "category": "notes_create_typed",
+  "expected_tools": [
+    "notes_search",
+    "notes_append"
+  ],
+  "id": "nct_04",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Notes app (AppleScript). Reversible \u2014 no ConfirmGate.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "notes_permission": true,
+    "ollama_warm": true
+  },
+  "sha256": "34a3e326ce222de1aa0c92b2338170351a40f76dfb914c36c77c211a22f4221a",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Add 'Schema migration rollback plan' under my 'Release checklist' note.",
+  "write_severity": "reversible_write"
+}

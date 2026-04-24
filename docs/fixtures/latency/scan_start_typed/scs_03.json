@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "scan_start_typed",
+  "expected_tools": [
+    "scan_start",
+    "scan_findings"
+  ],
+  "id": "scs_03",
+  "latency_class": "background_unbounded",
+  "memory_depth": "none",
+  "notes": "Scan runs as background daemon. scan_* tools not yet in catalog.rs \u2014 harness must stub.",
+  "output_channel": "notify_banner",
+  "pre_conditions": {
+    "background_allowed": true,
+    "fs_permission": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "requires_scan_subsystem": true
+  },
+  "sha256": "5732e81e59f8e2ad3bce2500cdc6f312c3e44aa3bd60714e64761dd06c73a534",
+  "sla_budget_ms": {
+    "first_token": 3000,
+    "full_response": 30000,
+    "prep_context": 500
+  },
+  "trigger": "typed_hud",
+  "user_message": "Kick off a scan on the external drive /Volumes/Archive.",
+  "write_severity": "read_only"
+}

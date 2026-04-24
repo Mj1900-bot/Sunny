@@ -1,0 +1,27 @@
+{
+  "adversarial": false,
+  "category": "screen_capture_typed_only",
+  "expected_tools": [
+    "screen_capture_full"
+  ],
+  "id": "scrc_01",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Typed-only. Voice-triggered screen capture disabled \u2014 see adv_voice_screen_capture_race.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "screen_recording_permission": true
+  },
+  "sha256": "167e22b2fa089268ddf2e2f3da524f8bffd4f9d88c492157714d9329beaeea8d",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Grab a screenshot of my whole screen.",
+  "write_severity": "reversible_write"
+}

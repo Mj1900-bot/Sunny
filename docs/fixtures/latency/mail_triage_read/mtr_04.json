@@ -1,0 +1,28 @@
+{
+  "adversarial": false,
+  "category": "mail_triage_read",
+  "expected_tools": [
+    "mail_search"
+  ],
+  "id": "mtr_04",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "same_session",
+  "notes": "Read-only Apple Mail. Fixture needs seeded inbox. No ConfirmGate.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "fixture_inbox_seeded": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "mail_permission": true,
+    "ollama_warm": true
+  },
+  "sha256": "157646d53731190b1ac0e60223c0448c70b4e4148b967f23e756e80ca52800e1",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Find emails from Alex in the last week.",
+  "write_severity": "read_only"
+}

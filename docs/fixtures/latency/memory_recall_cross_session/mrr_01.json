@@ -1,0 +1,31 @@
+{
+  "adversarial": false,
+  "category": "memory_recall_cross_session",
+  "expected_tools": [
+    "memory_recall"
+  ],
+  "id": "mrr_01",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "cross_session_semantic",
+  "notes": "Requires pre-seeded memory corpus across >=2 sessions >24h old.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "memory_index_warm": true,
+    "ollama_warm": true,
+    "requires_memory_facts": [
+      "seeded across >=2 prior sessions"
+    ],
+    "requires_sessions_older_than_hours": 24
+  },
+  "sha256": "831b9378c9a11785910cb43514b9581f4064b54a34d029d7e79b367a134dc149",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "What did I say about the deposition last Tuesday?",
+  "write_severity": "read_only"
+}

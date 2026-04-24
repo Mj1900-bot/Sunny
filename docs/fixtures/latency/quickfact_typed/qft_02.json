@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "quickfact_typed",
+  "expected_tools": [],
+  "id": "qft_02",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Zero-tool LLM answer; measures prep_context + stream latency only.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "633fb206669c17baa9918cb98ac7bfb113c3e94a74624a50667625b47a830d05",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Define 'idempotent' in one sentence.",
+  "write_severity": "read_only"
+}

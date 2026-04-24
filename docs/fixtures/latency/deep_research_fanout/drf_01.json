@@ -1,0 +1,32 @@
+{
+  "adversarial": false,
+  "category": "deep_research_fanout",
+  "expected_tools": [
+    "spawn_subagent",
+    "deep_research",
+    "web_search",
+    "web_fetch"
+  ],
+  "id": "drf_01",
+  "latency_class": "background_unbounded",
+  "memory_depth": "same_session",
+  "notes": "Background task; fanout cap of 4 sub-agents enforced at scheduler.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "allow_network": true,
+    "background_allowed": true,
+    "fanout_cap": 4,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "c6d655e3c844fa26ae7afb2d06ce99d32e847e733cb580f94c630c2c01b0db9b",
+  "sla_budget_ms": {
+    "first_token": 3000,
+    "full_response": 30000,
+    "prep_context": 500
+  },
+  "trigger": "typed_hud",
+  "user_message": "Do a deep research pass on small-modular-reactor vendors shipping in 2026.",
+  "write_severity": "read_only"
+}

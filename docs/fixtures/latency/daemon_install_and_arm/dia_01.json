@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "daemon_install_and_arm",
+  "expected_tools": [
+    "schedule_recurring",
+    "scheduler_add"
+  ],
+  "id": "dia_01",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "none",
+  "notes": "Installs recurring job. ConfirmGate confirms schedule + action before armed.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "confirm_gate_required": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "scheduler_permission": true
+  },
+  "sha256": "7d8f3539f298229f6dce8bf5c048596ff3d091c547af8ad8dc2e090a00240e83",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "typed_hud",
+  "user_message": "Every weekday at 7am, run a quick scan of my Downloads folder.",
+  "write_severity": "reversible_write"
+}

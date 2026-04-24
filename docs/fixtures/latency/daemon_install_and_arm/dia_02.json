@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "daemon_install_and_arm",
+  "expected_tools": [
+    "schedule_recurring",
+    "scheduler_add"
+  ],
+  "id": "dia_02",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "none",
+  "notes": "Installs recurring job. ConfirmGate confirms schedule + action before armed.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "confirm_gate_required": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "scheduler_permission": true
+  },
+  "sha256": "eb2495c8dc3dc4a72e40cf21e95d3b8f27977400fc5b1ce4c2ffa077a070f938",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "typed_hud",
+  "user_message": "Remind me every hour to stand up.",
+  "write_severity": "reversible_write"
+}

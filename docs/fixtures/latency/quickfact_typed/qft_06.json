@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "quickfact_typed",
+  "expected_tools": [],
+  "id": "qft_06",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Zero-tool LLM answer; measures prep_context + stream latency only.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "cabcec7f7799db2b815ad692bc62f4de350d97b31c8652a00f137ca72a691666",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "What does the Rust keyword `pub(crate)` mean?",
+  "write_severity": "read_only"
+}

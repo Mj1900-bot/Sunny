@@ -155,9 +155,11 @@ want the model to be able to call, you add BOTH:
 
 - SQLite at `~/.sunny/memory/memory.sqlite`, FTS5 on all text columns.
 - Three stores: `episodic` (events), `semantic` (facts), `procedural`
-  (skills). Embed column exists but is NULL — the backfill loop
-  requires Ollama's `nomic-embed-text` to be pulled; currently it is
-  not, so recall is FTS-only.
+  (skills). Embeddings are live: `spawn_embed_for` fires on every write
+  (see `memory/episodic.rs`, `semantic.rs`, `procedural.rs`), and
+  `start_backfill_loop` runs unconditionally from `startup.rs` to
+  backfill older rows. Recall is hybrid BM25 + cosine via `hybrid.rs`;
+  falls back to FTS-only when `nomic-embed-text` isn't available.
 - `build_memory_digest` injects into every turn's system prompt
   (500 ms timeout via `spawn_blocking`).
 - `memory_remember` / `memory_recall` are LLM-callable tools.

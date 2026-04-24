@@ -1,0 +1,25 @@
+{
+  "adversarial": false,
+  "category": "quickfact_voice",
+  "expected_tools": [],
+  "id": "qfv_03",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Kokoro must stream first audio <= 2000ms. Pre-requires kokoro_warm.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "94f34bc9bc2583ca67f66adbd632c67cd9fea1b3097629db7483af746133b799",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Tell me a fun fact about octopuses.",
+  "write_severity": "read_only"
+}

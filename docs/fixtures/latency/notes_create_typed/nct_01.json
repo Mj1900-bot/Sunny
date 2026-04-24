@@ -1,0 +1,27 @@
+{
+  "adversarial": false,
+  "category": "notes_create_typed",
+  "expected_tools": [
+    "notes_create"
+  ],
+  "id": "nct_01",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Notes app (AppleScript). Reversible \u2014 no ConfirmGate.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "notes_permission": true,
+    "ollama_warm": true
+  },
+  "sha256": "6e7e5eb388055780e366302cd6e821bd70a214597c5c4c817c54a2453b7f5d81",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Start a new note titled 'Sprint goals' with three bullet placeholders.",
+  "write_severity": "reversible_write"
+}

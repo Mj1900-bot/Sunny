@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "scan_start_typed",
+  "expected_tools": [
+    "scan_start",
+    "scan_findings"
+  ],
+  "id": "scs_02",
+  "latency_class": "background_unbounded",
+  "memory_depth": "none",
+  "notes": "Scan runs as background daemon. scan_* tools not yet in catalog.rs \u2014 harness must stub.",
+  "output_channel": "notify_banner",
+  "pre_conditions": {
+    "background_allowed": true,
+    "fs_permission": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "requires_scan_subsystem": true
+  },
+  "sha256": "e239de94ba8a0c289368487a3c5de685a2533308a1fd35a4b482866dcd1cfab4",
+  "sla_budget_ms": {
+    "first_token": 3000,
+    "full_response": 30000,
+    "prep_context": 500
+  },
+  "trigger": "typed_hud",
+  "user_message": "Run a security scan over ~/Desktop and tell me when done.",
+  "write_severity": "read_only"
+}

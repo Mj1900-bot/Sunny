@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "single_tool_weather_voice",
+  "expected_tools": [
+    "timezone_now",
+    "weather_current"
+  ],
+  "id": "wxv_03",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "One-tool happy path. timezone_now resolves 'now' for city; weather_current calls provider.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "allow_network": true,
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true,
+    "weather_api_key_present": true
+  },
+  "sha256": "9b576337fe3ff8ddf1727432698f4e59acd8a963f5be73c94dc9d676665cc2dc",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Is it raining in Seattle?",
+  "write_severity": "read_only"
+}

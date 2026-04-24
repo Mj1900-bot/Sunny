@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "calendar_write_voice",
+  "expected_tools": [
+    "calendar_create_event"
+  ],
+  "id": "calw_05",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "none",
+  "notes": "2h block. Standard confirm. ConfirmGate over voice \u2014 fixture does NOT auto-run; harness stubs confirm.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "calendar_permission": true,
+    "confirm_gate_required": true,
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "a650621e266c593e5b6ff96b857173b75307b85410359d3a7e6cc9d59159a7ab",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Add 'quarterly review' next Monday 3pm to 5pm.",
+  "write_severity": "reversible_write"
+}

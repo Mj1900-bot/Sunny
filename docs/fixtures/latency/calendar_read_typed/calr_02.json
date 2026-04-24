@@ -1,0 +1,29 @@
+{
+  "adversarial": false,
+  "category": "calendar_read_typed",
+  "expected_tools": [
+    "calendar_today",
+    "calendar_upcoming"
+  ],
+  "id": "calr_02",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "same_session",
+  "notes": "Read-only EventKit. Assumes seeded calendar DB.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "calendar_permission": true,
+    "fixture_calendar_seeded": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "df46f59c4a137b1c75c6bae4944a7f0a7240dbd25fec00de3c43df6d3df1c94f",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Show me my meetings tomorrow.",
+  "write_severity": "read_only"
+}

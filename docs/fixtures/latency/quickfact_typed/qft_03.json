@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "quickfact_typed",
+  "expected_tools": [],
+  "id": "qft_03",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Zero-tool LLM answer; measures prep_context + stream latency only.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "97f20a0105878134985ecdee280272228cb007a699832b81611ca958af000585",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "How many planets are in the solar system?",
+  "write_severity": "read_only"
+}

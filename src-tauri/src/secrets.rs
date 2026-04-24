@@ -43,9 +43,12 @@
 //! codebase.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::RwLock;
 use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
@@ -211,6 +214,91 @@ pub async fn elevenlabs_api_key()  -> Option<String> { resolve(SecretKind::Eleve
 pub async fn wavespeed_api_key()   -> Option<String> { resolve(SecretKind::Wavespeed).await }
 
 // ---------------------------------------------------------------------------
+// Process-level key-presence cache
+// ---------------------------------------------------------------------------
+//
+// `anthropic_key_present` / `zai_key_present` / `moonshot_key_present` (in
+// `agent_loop/providers/auth.rs`) are called at the top of `pick_backend`
+// on every turn the session cache misses. Under the hood each one calls
+// `resolve` → `keychain_find` → spawns `/usr/bin/security
+// find-generic-password`. The subprocess spawn costs 50-150 ms on macOS
+// cold, and the first-turn `tokio::join!` in `pick_backend` fires two of
+// them in parallel — but every subsequent *miss* (new `session_id`, or a
+// mid-session provider flip hitting a fresh cache bucket) still pays the
+// spawn cost.
+//
+// Process-level memoisation collapses every subsequent call for the same
+// `SecretKind` to a `HashMap` lookup. The presence bit is stable across
+// a process lifetime except when the user writes/deletes a key through
+// Settings — `keychain_set` and `keychain_delete` below call
+// `invalidate_key_presence` to drop the stale bit, so the next probe
+// re-runs the subprocess and the UI pill flips immediately.
+//
+// Trade-off: if the user edits their Keychain with `/usr/bin/security`
+// or Keychain Access directly (bypassing the Settings UI), this cache
+// will return stale `present: true` / `false` until the next app
+// restart. That's an acceptable rarity — Settings is the documented
+// path, and a stale "present" only results in one failed API call at
+// most before the real subprocess re-resolves on the `resolve()` side.
+
+type KeyPresenceMap = HashMap<SecretKind, bool>;
+
+fn key_presence_cache() -> &'static RwLock<KeyPresenceMap> {
+    static CACHE: OnceLock<RwLock<KeyPresenceMap>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Return whether a key for `kind` is currently reachable (env or
+/// Keychain), using a process-level cache to avoid re-spawning the
+/// `security` subprocess on every call.
+///
+/// The first call for a given `kind` runs the full `resolve` path
+/// (50-150 ms subprocess on macOS cold); subsequent calls return in
+/// microseconds from the in-memory map. Invalidation is automatic on
+/// `keychain_set` / `keychain_delete` — any other path that mutates
+/// the Keychain (e.g. a user running `/usr/bin/security` directly)
+/// will read a stale value until process restart.
+pub async fn key_present_cached(kind: SecretKind) -> bool {
+    // Fast path: read lock, check for a cached answer.
+    {
+        let guard = key_presence_cache().read().await;
+        if let Some(&present) = guard.get(&kind) {
+            return present;
+        }
+    }
+
+    // Miss — resolve through the env/Keychain path.
+    let present = resolve(kind)
+        .await
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+
+    // Write lock to memoise. Double-check under the lock so a racing
+    // resolver doesn't silently overwrite a fresh answer from a
+    // parallel caller (both would compute the same bit anyway, so this
+    // is more about keeping the map consistent than correctness).
+    let mut guard = key_presence_cache().write().await;
+    guard.entry(kind).or_insert(present);
+    present
+}
+
+/// Drop the cached presence bit for `kind`. Called internally by
+/// `keychain_set` and `keychain_delete` so the next probe re-resolves.
+/// Safe to call when the entry is absent.
+pub async fn invalidate_key_presence(kind: SecretKind) {
+    let mut guard = key_presence_cache().write().await;
+    guard.remove(&kind);
+}
+
+/// Drop every cached presence bit. Used by the bulk env-import path —
+/// one call is cheaper than seven `invalidate_key_presence` hops when
+/// several providers might have flipped in the same pass.
+pub async fn invalidate_all_key_presence() {
+    let mut guard = key_presence_cache().write().await;
+    guard.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Core resolve / set / delete
 // ---------------------------------------------------------------------------
 
@@ -308,7 +396,15 @@ pub async fn keychain_set(kind: SecretKind, value: &str) -> Result<(), String> {
         .await;
 
     // Step 2 — route through stdin so the key is never visible in `ps`.
-    keychain_set_via_stdin(kind, trimmed).await
+    let result = keychain_set_via_stdin(kind, trimmed).await;
+
+    // Invalidate the process-level presence cache regardless of
+    // outcome: on success the bit should flip true; on failure the
+    // prior bit may be stale (delete-then-fail leaves no entry). The
+    // next `key_present_cached` call will re-resolve.
+    invalidate_key_presence(kind).await;
+
+    result
 }
 
 /// Remove a Keychain entry for the given provider. Missing entries are
@@ -326,6 +422,9 @@ pub async fn keychain_delete(kind: SecretKind) -> Result<(), String> {
         .map_err(|e| format!("spawn security: {e}"))?;
     // Exit 44 = "item not found" — that's fine, idempotent delete.
     if status.success() || status.code() == Some(44) {
+        // Drop the cached presence bit so the next probe sees the
+        // deletion immediately rather than reporting stale `true`.
+        invalidate_key_presence(kind).await;
         Ok(())
     } else {
         Err(format!(
@@ -645,6 +744,78 @@ pub async fn import_env_to_keychain() -> Vec<ImportOutcome> {
 }
 
 // ---------------------------------------------------------------------------
+// Auth profiles — named on-disk credential bundles for `http_request`
+// ---------------------------------------------------------------------------
+//
+// Profiles live at `~/.sunny/secrets/<name>.json`. The file must be mode
+// 0600 (user-only); we refuse to read anything looser so a misconfigured
+// profile doesn't quietly ship a token to an agent tool via the inventory
+// of readable files. Profile names are constrained to `[A-Za-z0-9_-]+`
+// to forbid path-traversal.
+//
+// Schema (one of):
+//   { "type": "bearer",  "token": "..." }
+//   { "type": "basic",   "username": "...", "password": "..." }
+//   { "type": "api_key", "header": "x-api-key", "value": "..." }
+//   { "type": "custom",  "headers": { "X-A": "...", "X-B": "..." } }
+
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuthProfile {
+    Bearer { token: String },
+    Basic { username: String, password: String },
+    ApiKey { header: String, value: String },
+    Custom { headers: BTreeMap<String, String> },
+}
+
+/// Read an auth profile from `~/.sunny/secrets/<name>.json`. Fails
+/// closed on anything that looks wrong: invalid name, missing file,
+/// permissions looser than 0600, or malformed JSON. Error messages
+/// never echo the file body.
+pub async fn get_profile(name: &str) -> Result<AuthProfile, String> {
+    // Name is constrained to the URL-safe subset so `name` cannot
+    // escape the secrets directory via `..` or absolute path tricks.
+    if name.is_empty()
+        || name
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    {
+        return Err(format!("invalid profile name `{name}`"));
+    }
+
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let path = std::path::PathBuf::from(home)
+        .join(".sunny")
+        .join("secrets")
+        .join(format!("{name}.json"));
+
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("profile `{name}`: {e}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "profile `{name}`: permissions {mode:o} too loose (want 0600)"
+            ));
+        }
+    }
+    let _ = meta;
+
+    let body = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("profile `{name}`: {e}"))?;
+    let profile: AuthProfile = serde_json::from_str(&body)
+        .map_err(|_| format!("profile `{name}`: invalid JSON schema"))?;
+    Ok(profile)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 //
@@ -834,6 +1005,77 @@ mod tests {
         assert_eq!(classify_status(500).0, "server");
         assert_eq!(classify_status(502).0, "server");
         assert_eq!(classify_status(418).0, "unknown");
+    }
+
+    /// `key_present_cached` must memoise the answer — two calls for
+    /// the same `SecretKind` should resolve once and serve the second
+    /// from the in-memory map. We prove this by populating env with a
+    /// unique value, reading it once, clearing env, and verifying the
+    /// second call still returns `true` (because the cache held the
+    /// presence bit, not the value).
+    #[tokio::test]
+    async fn key_present_cached_memoises_across_calls() {
+        let _g = env_guard();
+        // Pick an unused provider so we can't collide with a real
+        // Keychain entry on the dev machine.
+        let kind = SecretKind::Wavespeed;
+        invalidate_key_presence(kind).await;
+
+        unsafe {
+            for v in kind.env_vars() {
+                std::env::remove_var(v);
+            }
+            std::env::set_var("WAVESPEED_API_KEY", "ws_cache_test_abcdef1234");
+        }
+        let first = key_present_cached(kind).await;
+        // Now clear the env so a fresh `resolve` would return `false`.
+        unsafe {
+            std::env::remove_var("WAVESPEED_API_KEY");
+        }
+        // Second call must still see the cached `true`.
+        let second = key_present_cached(kind).await;
+        // Clean up before asserts so a failing test doesn't poison the
+        // cache for later tests.
+        invalidate_key_presence(kind).await;
+
+        assert!(first, "first call should report key present");
+        assert!(second, "second call should serve from cache");
+    }
+
+    /// `invalidate_key_presence` must force a re-resolve on the next
+    /// call. Otherwise Settings-save would leave `pick_backend`
+    /// serving a stale "key missing" bit for the rest of the session.
+    #[tokio::test]
+    async fn invalidate_key_presence_forces_reresolve() {
+        let _g = env_guard();
+        let kind = SecretKind::Wavespeed;
+        invalidate_key_presence(kind).await;
+
+        unsafe {
+            for v in kind.env_vars() {
+                std::env::remove_var(v);
+            }
+        }
+        // With nothing in env and no Keychain entry for this test
+        // service, the cached value should be `false`.
+        let before = key_present_cached(kind).await;
+
+        // Now "write the key" (via env) and invalidate the cache as
+        // `keychain_set` would.
+        unsafe {
+            std::env::set_var("WAVESPEED_API_KEY", "ws_invalidate_test_abcdef");
+        }
+        invalidate_key_presence(kind).await;
+        let after = key_present_cached(kind).await;
+
+        // Clean up.
+        unsafe {
+            std::env::remove_var("WAVESPEED_API_KEY");
+        }
+        invalidate_key_presence(kind).await;
+
+        assert!(!before, "expected no key before write");
+        assert!(after, "expected invalidation to force a re-resolve");
     }
 
     /// Redact is the last-line-of-defence against a provider echoing our

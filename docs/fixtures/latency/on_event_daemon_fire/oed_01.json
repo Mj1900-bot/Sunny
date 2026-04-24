@@ -1,0 +1,33 @@
+{
+  "adversarial": false,
+  "category": "on_event_daemon_fire",
+  "expected_tools": [
+    "scheduler_add",
+    "scan_start",
+    "system_notification"
+  ],
+  "id": "oed_01",
+  "latency_class": "background_unbounded",
+  "memory_depth": "none",
+  "notes": "Event-triggered daemon. emitDaemonEvent is harness-side, not a tool.",
+  "output_channel": "notify_banner",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "background_allowed": true,
+    "confirm_gate_required": true,
+    "fsevents_permission": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "scheduler_permission": true
+  },
+  "sha256": "e89df1f5de12f3ebccff248efd4cdbd68b42fe4c1357b3dac244eaedd9f6d1f3",
+  "sla_budget_ms": {
+    "first_token": 3000,
+    "full_response": 30000,
+    "prep_context": 500
+  },
+  "trigger": "on_event",
+  "user_message": "When a new file lands in ~/Downloads, scan it automatically.",
+  "write_severity": "reversible_write"
+}

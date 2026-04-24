@@ -1,0 +1,27 @@
+{
+  "adversarial": false,
+  "category": "memory_remember_typed",
+  "expected_tools": [
+    "memory_remember"
+  ],
+  "id": "mrw_02",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "same_session",
+  "notes": "Write to memory store. Reversible (memory_forget possible).",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "memory_index_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "8d0775c82a95f28ddf22a04bbebae335c79862440277e5ad19847f9e68b31e3b",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Note this: the SSH key for the staging box lives in ~/.ssh/staging_ed25519.",
+  "write_severity": "reversible_write"
+}

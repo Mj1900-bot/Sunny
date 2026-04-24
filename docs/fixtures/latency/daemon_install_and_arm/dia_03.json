@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "daemon_install_and_arm",
+  "expected_tools": [
+    "schedule_recurring",
+    "scheduler_add"
+  ],
+  "id": "dia_03",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "none",
+  "notes": "Installs recurring job. ConfirmGate confirms schedule + action before armed.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "confirm_gate_required": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "scheduler_permission": true
+  },
+  "sha256": "dcb8736dd486ccf164b8ddc4e42beae25b3eebc0a1793e8a1c0932ade9d6fcca",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "typed_hud",
+  "user_message": "Set up a daily job at 6pm that summarises unread mail.",
+  "write_severity": "reversible_write"
+}

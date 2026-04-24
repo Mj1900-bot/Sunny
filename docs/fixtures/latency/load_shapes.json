@@ -1,0 +1,479 @@
+{
+  "$schema_version": "1.0.0",
+  "description": "Realistic Sunny HUD load shapes. Each shape is a fixture-chain the harness runs sequentially on a single boot. Feeds `latency_run_load_shape` (the chain extension of `latency_run_fixture`). Designed for single-user p95 measurement, NOT stress / QPS / adversarial load — those are non-goals (see sunny-test-load-shape-designer.md).",
+  "author": "sunny-test-load-shape-designer (Wave 2)",
+  "targets": {
+    "streaming_fix_assumed": true,
+    "session_cache_layer_assumed": true,
+    "note": "Budgets listed under `sla_ms_target_post_fix` assume (a) the buffered `ollama_turn` fallback at providers/ollama.rs:259-265 is replaced with a true streaming path for the tool case, and (b) `sunny-session-cache-layer` pre-warms every session prefix (voice, daemon-*, auto-*) not just `main`. `sla_ms_today` is what the shape measures against the unfixed codebase — it's the bottleneck proof, not the aspiration.",
+    "fixture_id_convention": "When `docs/fixtures/latency/index.json` lands from sunny-test-fixture-synthesizer, replace each `category:<slug>` placeholder below with the concrete fixture ID. Until then the harness resolves a category by picking the first fixture whose `category` field equals the slug."
+  },
+  "shapes": [
+    {
+      "id": "cold_boot_first_turn",
+      "description": "App just started. No Ollama model resident, no session_cache warm for the user's real session_id, no memory digest. First real typed turn — the user's worst-case experience. Budget acknowledges ≤15s on full-cold-miss today (model load + keychain + tags probe + digest stack) and targets ≤4s once session cache + streaming fix land.",
+      "preconditions": {
+        "boot_state": "cold",
+        "session_cache_warm_for": [],
+        "ollama_model_resident": false,
+        "memory_digest_warm": false,
+        "background_loops_started": false,
+        "note": "Harness must launch into this shape BEFORE the React App effect fires startMemoryWriter/consolidator/skillSynthesizer/daemons. Either skip `App.tsx` side-effects in harness mode or set a `HARNESS_COLD=1` env flag the loops check on their first tick."
+      },
+      "chain": [
+        {
+          "step": 1,
+          "fixture": "category:cold_first_turn_typed_simple_lookup",
+          "step_session_id": "harness-cold-boot-{run_id}",
+          "description": "Simple lookup — e.g. `what time is it in Vancouver?` — the path the user's FIRST real message takes. Exercises model load, keychain probe, tags probe, digest build on the critical path.",
+          "sla_ms_today": 17500,
+          "sla_ms_target_post_fix": 4000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 600,
+            "prep_context_end__first_token": 1800,
+            "first_token__full_response_end": 1000,
+            "full_response_end__critic_end": 300,
+            "critic_end__turn_end": 300,
+            "note": "600+1800+1000+300+300 = 4000. Any single stage blowing its budget by ≥500ms burns the whole shape's headroom."
+          },
+          "post_conditions": {
+            "session_cache_populated_for": ["harness-cold-boot-{run_id}"],
+            "ollama_model_resident": true,
+            "memory_digest_warm": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "warm_multi_turn",
+      "description": "Happy path after the app has been open a few minutes. Five typed turns on the same session, each builds on the prior. Session cache, prompt cache, memory digest all hit. This is where the 2s p95 promise MUST hold — if it doesn't, we have no story for a demo.",
+      "preconditions": {
+        "boot_state": "warm",
+        "session_cache_warm_for": ["main", "harness-warm-multi-{run_id}"],
+        "ollama_model_resident": true,
+        "memory_digest_warm": true,
+        "background_loops_started": true,
+        "note": "Harness runs shape `cold_boot_first_turn` implicitly (or a scripted primer) before this shape to warm state. The primer's measurements are discarded — only the 5-turn chain counts for this shape's p95."
+      },
+      "chain": [
+        {
+          "step": 1,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-warm-multi-{run_id}",
+          "description": "Turn 1: baseline lookup, establishes session history.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 200,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 800,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 1 }
+        },
+        {
+          "step": 2,
+          "fixture": "category:warm_typed_followup_refers_to_prior",
+          "step_session_id": "harness-warm-multi-{run_id}",
+          "description": "Turn 2: explicit follow-up (`and in Toronto?`). Exercises `prepare_context` tail replay (last 16 turns) without rewriting system prompt.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 250,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 750,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100,
+            "note": "Context-replay +50ms vs turn 1 for the extra serialised tail."
+          },
+          "post_conditions": { "history_turns": 2 }
+        },
+        {
+          "step": 3,
+          "fixture": "category:warm_typed_tool_use_parallel",
+          "step_session_id": "harness-warm-multi-{run_id}",
+          "description": "Turn 3: LLM emits 2-3 safe tool_use blocks. Exercises the `join_all` safe-bucket fan-out at core.rs:1058-1078. Dispatch time is the safe-bucket slowest tool, not the sum.",
+          "sla_ms_today": 3500,
+          "sla_ms_target_post_fix": 2500,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 250,
+            "prep_context_end__first_token": 700,
+            "tool_dispatch_start__tool_dispatch_end": 800,
+            "tool_dispatch_end__full_response_end": 500,
+            "full_response_end__critic_end": 150,
+            "critic_end__turn_end": 100,
+            "note": "Tool-use turns get a 2.5s budget, not 2s, because a tool round-trip is irreducible. p95 aggregation should bucket tool vs non-tool turns separately."
+          },
+          "post_conditions": { "history_turns": 3, "tools_called": "≥2" }
+        },
+        {
+          "step": 4,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-warm-multi-{run_id}",
+          "description": "Turn 4: back to a cheap lookup. Verifies the prior tool turn's memory/history growth didn't inflate `prep_context_end`.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 4 }
+        },
+        {
+          "step": 5,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-warm-multi-{run_id}",
+          "description": "Turn 5: confirms steady-state p95 — cache is hot, history is growing, but no new tool cost. This is the turn that most commonly ships to demo.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 5 }
+        }
+      ],
+      "aggregation": {
+        "p95_target_ms": 2000,
+        "p95_inclusion_rule": "Exclude turn 3 from non-tool p95 aggregate; report tool-turn budget separately.",
+        "fail_if_any_turn_exceeds_ms": 3000
+      }
+    },
+    {
+      "id": "voice_mid_session",
+      "description": "Typed -> voice -> typed. The voice turn pays STT (cpal capture + whisper transcribe) BEFORE the LLM turn and TTS (Kokoro daemon render + playback) AFTER it. SLA must cover the end-to-end user-perceived latency: `press-space -> hear reply start`, NOT just LLM TTFT.",
+      "preconditions": {
+        "boot_state": "warm",
+        "session_cache_warm_for": ["main"],
+        "ollama_model_resident": true,
+        "memory_digest_warm": true,
+        "background_loops_started": true,
+        "voice_stack_warm": true,
+        "kokoro_daemon_resident": true,
+        "whisper_model_cached": true,
+        "note": "Kokoro daemon is pre-warmed by `startup.rs:205` so the FIRST `speak()` doesn't stall. Harness must verify `kokoro_daemon_pid` is set in `diagnostics.rs` before entering this shape, else fail the run with an infrastructure-error marker (not an SLA miss)."
+      },
+      "chain": [
+        {
+          "step": 1,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-voice-mid-typed-{run_id}",
+          "description": "Typed warmup turn. Keeps the shape realistic: user usually types a bit before going hands-free.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 1 }
+        },
+        {
+          "step": 2,
+          "fixture": "category:warm_voice_simple_question",
+          "step_session_id": "sunny-voice-harness-{run_id}",
+          "description": "Voice turn. DIFFERENT session_id prefix (`sunny-voice-*`) so `is_voice_session` at core_helpers.rs:98 gates pick_model's voice path. This is where the current code pays the non-main-session cold penalty (Wave-1 key context) — watch `prep_context_end` blow past its typed budget.",
+          "was_voice": true,
+          "sla_ms_today": 6000,
+          "sla_ms_target_post_fix": 3500,
+          "per_stage_budget_post_fix_ms": {
+            "stt_record_start__stt_transcribe_end": 900,
+            "turn_start__prep_context_end": 400,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100,
+            "tts_render_start__tts_first_audio_frame": 500,
+            "note": "900 (STT) + 2100 (LLM) + 500 (TTS TTFAF) = 3500ms press-to-hear. `stt_*` and `tts_*` markers need to be added to `latency_harness::stages` — spec below.",
+            "stage_markers_required": ["stt_record_start", "stt_record_stop", "stt_transcribe_end", "tts_render_start", "tts_first_audio_frame", "tts_render_end"]
+          },
+          "post_conditions": { "history_turns": 2, "tts_played": true }
+        },
+        {
+          "step": 3,
+          "fixture": "category:warm_typed_followup_refers_to_prior",
+          "step_session_id": "harness-voice-mid-typed-{run_id}",
+          "description": "Back to typed on the ORIGINAL session_id. Two separate session caches live in memory now — verifies the voice turn didn't pollute the typed cache nor vice versa.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 2, "note": "Typed session history unchanged by the voice detour — the two sessions are independent." }
+        }
+      ],
+      "aggregation": {
+        "p95_typed_ms": 2000,
+        "p95_voice_press_to_hear_ms": 3500,
+        "fail_if_voice_press_to_hear_ms_exceeds": 5000
+      }
+    },
+    {
+      "id": "concurrent_subagent_dispatch",
+      "description": "Main agent issues a plan/research message that spawns 2-3 sub-agents in parallel via `spawn_subagent` (one tool_use turn emits multiple `spawn_subagent` calls in the same batch). Sub-agents run on their own uuid session_ids at depth=1, draining the same ollama endpoint. Measures whether sub-agent contention pushes main's streaming past budget. MAX_SUBAGENT_DEPTH=3 per core.rs:127 so we stay under the limit.",
+      "preconditions": {
+        "boot_state": "warm",
+        "session_cache_warm_for": ["main", "harness-subagent-main-{run_id}"],
+        "ollama_model_resident": true,
+        "memory_digest_warm": true,
+        "background_loops_started": true,
+        "subagent_queue_drained": true
+      },
+      "chain": [
+        {
+          "step": 1,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-subagent-main-{run_id}",
+          "description": "Priming turn. Keeps shape isolating the dispatch cost, not the session cold cost.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 1 }
+        },
+        {
+          "step": 2,
+          "fixture": "category:warm_typed_fanout_three_subagents",
+          "step_session_id": "harness-subagent-main-{run_id}",
+          "description": "Plan-style prompt (`research X, Y, Z in parallel and summarise`). LLM emits 3 `spawn_subagent` tool_use blocks in one batch; dispatch handler fans them out via `join_all` (safe bucket). Main turn blocks until all three return a result. p95 budget is the slowest sub-agent + main's post-dispatch synthesis.",
+          "sla_ms_today": 18000,
+          "sla_ms_target_post_fix": 6000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "tool_dispatch_start__tool_dispatch_end": 4000,
+            "tool_dispatch_end__full_response_end": 800,
+            "full_response_end__critic_end": 150,
+            "critic_end__turn_end": 50,
+            "note": "4000ms budget for THREE concurrent sub-agents each running ~3500ms solo. If the budget needs 4*3.5=14s they are serialising — a bug in the fan-out. Contention target: slowest_parallel < 1.2x slowest_solo.",
+            "contention_signal_stages": ["subagent_spawn_start", "subagent_first_token", "subagent_turn_end"]
+          },
+          "post_conditions": { "history_turns": 2, "subagents_completed": 3 }
+        },
+        {
+          "step": 3,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-subagent-main-{run_id}",
+          "description": "Post-fanout cooldown turn. Verifies the 3 sub-agent sessions' cache entries were reclaimed (or aged out) and aren't bloating `pick_backend`'s lookup.",
+          "sla_ms_today": 2000,
+          "sla_ms_target_post_fix": 2000,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 300,
+            "prep_context_end__first_token": 700,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 200,
+            "critic_end__turn_end": 100
+          },
+          "post_conditions": { "history_turns": 3 }
+        }
+      ],
+      "aggregation": {
+        "p95_main_fanout_ms": 6000,
+        "subagent_contention_ratio_max": 1.2,
+        "fail_if_contention_ratio_exceeds": 1.5
+      }
+    },
+    {
+      "id": "background_interference",
+      "description": "A typed turn fires while consolidator (15 min tick), skillSynthesizer (20 min tick), OR memoryWriter is mid-tick. These background loops call LLMs and hit the memory DB — if they're not preemptible, the user's turn's p95 blows up. The interference simulator (spec below) forces one of them to be mid-tick at turn start so the scenario is reproducible.",
+      "preconditions": {
+        "boot_state": "warm",
+        "session_cache_warm_for": ["main", "harness-bg-interference-{run_id}"],
+        "ollama_model_resident": true,
+        "memory_digest_warm": true,
+        "background_loops_started": true,
+        "interference_active": true,
+        "note": "Per the Interference Simulator spec, the harness triggers one of {consolidator, skillSynthesizer, memoryWriter, ambient_classifier} ~100ms before step 1 turn_start, so the user turn lands mid-tick. Each sub-shape (a/b/c/d below) is run as a separate chain invocation for clean attribution."
+      },
+      "chain": [
+        {
+          "step": 1,
+          "fixture": "category:warm_typed_simple_lookup",
+          "step_session_id": "harness-bg-interference-{run_id}",
+          "description": "User turn fires during the forced background tick. The tick MUST be preemptible / cooperatively yielding — if it isn't, this turn's `prep_context_end` or `first_token` blows its budget.",
+          "sla_ms_today": 4500,
+          "sla_ms_target_post_fix": 2200,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__prep_context_end": 400,
+            "prep_context_end__first_token": 900,
+            "first_token__full_response_end": 700,
+            "full_response_end__critic_end": 150,
+            "critic_end__turn_end": 50,
+            "note": "200ms budget headroom (2200 vs 2000) acknowledges unavoidable DB contention during memoryWriter tick. Beyond that, any extra latency is a real bug — the bg loop needs a `SIGHT_QUICK_PATH` cooperative yield."
+          },
+          "post_conditions": { "history_turns": 1, "bg_tick_completed": "deferred_or_completed" }
+        }
+      ],
+      "variants": [
+        { "id": "bg_consolidator", "interference_source": "consolidator", "tick_duration_ms_typical": 2500, "per_tick_llm_cost": "~1 LLM call on local ollama, 0.5B model" },
+        { "id": "bg_skillSynthesizer", "interference_source": "skillSynthesizer", "tick_duration_ms_typical": 1800, "per_tick_llm_cost": "1 LLM synthesis call per qualifying cluster" },
+        { "id": "bg_memoryWriter", "interference_source": "memoryWriter", "tick_duration_ms_typical": 300, "per_tick_llm_cost": "0 (DB write only)" },
+        { "id": "bg_ambient_classifier", "interference_source": "ambient_classifier", "tick_duration_ms_typical": 2000, "per_tick_llm_cost": "1 call, qwen2.5:0.5b, 2s hard cap per ambient_classifier.rs:59" }
+      ],
+      "aggregation": {
+        "p95_all_variants_ms": 2500,
+        "fail_if_any_variant_exceeds_ms": 3500
+      }
+    },
+    {
+      "id": "confirm_gate_interrupt",
+      "description": "Turn invokes a dangerous tool (e.g. `shell_exec`, `apple_mail_send`) which triggers a ConfirmGate modal. Per core.rs:1035 and confirm.rs:121 (CONFIRM_TIMEOUT_SECS=30), the dispatch blocks until the user responds. SLA here is NOT TTFT — the user is in the loop. It's the gate-accept-to-dispatch latency: from the moment the user clicks Approve to the moment the tool actually runs. If this is >100ms the UX feels laggy even though TTFT was fine.",
+      "preconditions": {
+        "boot_state": "warm",
+        "session_cache_warm_for": ["main", "harness-confirm-gate-{run_id}"],
+        "ollama_model_resident": true,
+        "memory_digest_warm": true,
+        "background_loops_started": true,
+        "auto_accept_mode_off": true,
+        "note": "Harness must drive the ConfirmGate response automatically: (a) subscribe to `sunny://agent.confirm.request`, (b) wait `simulated_user_think_ms` (default 800ms), (c) emit the approve response on the channel via `window.__SUNNY.emit` or a test-only Tauri command that bypasses the modal. The gate-accept-to-dispatch timer starts at step (c) and ends at the first stage_marker(`tool_dispatch_start`) AFTER step (c)."
+      },
+      "chain": [
+        {
+          "step": 1,
+          "fixture": "category:warm_typed_dangerous_tool_request",
+          "step_session_id": "harness-confirm-gate-{run_id}",
+          "description": "User asks for something that dispatches a dangerous tool (is_dangerous=true per catalog.rs). Main turn streams the explanation, then dispatches — dispatcher emits `sunny://agent.confirm.request`, waits on the oneshot channel.",
+          "simulated_user_think_ms": 800,
+          "sla_ms_today": null,
+          "sla_ms_target_post_fix": null,
+          "per_stage_budget_post_fix_ms": {
+            "turn_start__confirm_request_emitted": 1200,
+            "confirm_request_emitted__confirm_response_received": "user-controlled (simulated 800ms)",
+            "confirm_response_received__tool_dispatch_start": 100,
+            "tool_dispatch_start__tool_dispatch_end": 500,
+            "note": "SLA is ONLY the `confirm_response_received__tool_dispatch_start` gap — everything else is user-paced or tool-internal. Target: ≤100ms. Anything higher is Sunny wiring latency between oneshot wake-up and actually calling the dispatcher.",
+            "stage_markers_required": ["confirm_request_emitted", "confirm_response_received"]
+          },
+          "post_conditions": { "history_turns": 1, "tool_executed": true, "gate_approved": true }
+        }
+      ],
+      "aggregation": {
+        "gate_accept_to_dispatch_p95_ms": 100,
+        "fail_if_exceeds_ms": 250,
+        "note": "TTFT is NOT tracked as a pass/fail for this shape. Report it for observability, but the shape passes iff gate_accept_to_dispatch stays under 100ms p95."
+      }
+    }
+  ],
+  "summary_table": {
+    "description": "Per-turn SLA budgets, mirrored from each shape above for quick scanning.",
+    "columns": ["shape_id", "step", "turn_label", "sla_ms_today", "sla_ms_target_post_fix"],
+    "rows": [
+      ["cold_boot_first_turn",       1, "cold first turn",            17500, 4000],
+      ["warm_multi_turn",            1, "turn 1 simple",                2000, 2000],
+      ["warm_multi_turn",            2, "turn 2 followup",              2000, 2000],
+      ["warm_multi_turn",            3, "turn 3 parallel tools",        3500, 2500],
+      ["warm_multi_turn",            4, "turn 4 simple",                2000, 2000],
+      ["warm_multi_turn",            5, "turn 5 simple",                2000, 2000],
+      ["voice_mid_session",          1, "typed warmup",                 2000, 2000],
+      ["voice_mid_session",          2, "voice press-to-hear",          6000, 3500],
+      ["voice_mid_session",          3, "typed followup",               2000, 2000],
+      ["concurrent_subagent_dispatch", 1, "priming",                    2000, 2000],
+      ["concurrent_subagent_dispatch", 2, "3-subagent fanout",         18000, 6000],
+      ["concurrent_subagent_dispatch", 3, "cooldown",                   2000, 2000],
+      ["background_interference",    1, "turn during bg tick",          4500, 2200],
+      ["confirm_gate_interrupt",     1, "gate-accept-to-dispatch (ms)",  null,  100]
+    ]
+  },
+  "harness_extension_spec": {
+    "title": "sunny-test-harness-builder: single-fixture → chain",
+    "summary": "Today `latency_run_fixture` (latency_harness.rs:203) drives ONE fixture through `agent_run`. The chain extension runs a load_shapes.json shape end-to-end on one boot, with pre/post-condition gates between steps, so p95 aggregates across realistic sequences.",
+    "required_additions": [
+      {
+        "item": "new_tauri_command",
+        "name": "latency_run_load_shape",
+        "signature": "async fn latency_run_load_shape(app: AppHandle, shape_id: String, run_id: Option<String>) -> Result<LoadShapeSummary, String>",
+        "behavior": [
+          "Load `docs/fixtures/latency/load_shapes.json`, locate shape by id.",
+          "Generate a `run_id` if not provided (uuid first 8 chars).",
+          "For each step in `chain`: (a) expand `{run_id}` placeholders in step_session_id, (b) resolve `category:<slug>` to a concrete fixture via the fixture index, (c) verify preconditions from either shape.preconditions (on step 1) or previous step's post_conditions, (d) scope `RUN_CTX` per step with a sub-run-id `hx-{run_id}-s{step}` so JSONL lines can be filtered per-step, (e) run the fixture's message through `agent_run`, (f) record `LoadStepSummary` with total_ms + per-stage deltas.",
+          "Emit one aggregate line per shape: stage=`shape_end`, extra={shape_id, step_count, per_step_total_ms: [..], failed_budgets: [..]}.",
+          "Return `LoadShapeSummary { shape_id, run_id, steps: Vec<LoadStepSummary>, aggregate: { p95_ms, max_ms, failed_budgets: [..] } }`."
+        ]
+      },
+      {
+        "item": "new_stage_markers",
+        "names": [
+          "stt_record_start", "stt_record_stop", "stt_transcribe_end",
+          "tts_render_start", "tts_first_audio_frame", "tts_render_end",
+          "confirm_request_emitted", "confirm_response_received",
+          "subagent_spawn_start", "subagent_first_token", "subagent_turn_end",
+          "shape_step_boundary"
+        ],
+        "wiring": [
+          "stt_* go in audio.rs at the `start` (line 164), `stop` (line 191), `transcribe` (line 216) boundaries.",
+          "tts_* go in commands/voice.rs `speak` (line 58) and in the Kokoro daemon pipe where audio-frame-0 is first flushed.",
+          "confirm_* go in confirm.rs:155 (just before the `app.emit` call) and confirm.rs:175-181 (on oneshot resolve, before the timeout check).",
+          "subagent_* go in agent_loop/subagents.rs at spawn_subagent's entry, at the first token pumped through `sunny://agent.sub`, and at the function's return.",
+          "shape_step_boundary is emitted by the chain runner itself between steps, so JSONL filtering per-step is possible without parsing turn_start/turn_end counts."
+        ]
+      },
+      {
+        "item": "session_id_placeholder_expansion",
+        "rule": "A step's `step_session_id` may contain `{run_id}`. The chain runner substitutes once per shape invocation before constructing the ChatRequest. If a step has `was_voice: true` and the session_id does NOT start with `sunny-voice-`, the chain runner MUST reject the shape (misconfigured)."
+      },
+      {
+        "item": "pre_post_condition_checks",
+        "rule": "Before each step, assert: (a) booleans under `preconditions` match diagnostics.rs snapshot (ollama model resident via ollama tags, kokoro_daemon_pid set, etc.); (b) after step N, assert the step's `post_conditions`. On failure, mark the step `infrastructure_error` rather than `sla_miss` so the operator can distinguish a broken test rig from a real regression."
+      },
+      {
+        "item": "per_stage_budget_enforcement",
+        "rule": "For each step, compute `actual_ms` for each `__` key in `per_stage_budget_post_fix_ms` from the JSONL lines scoped to that step's sub-run-id. Compare to the budget. Any overrun contributes to `failed_budgets: [{step, stage, actual_ms, budget_ms}]` in the aggregate, but does NOT short-circuit the chain — later steps still run so we get a full picture."
+      },
+      {
+        "item": "frontend_dev_ui",
+        "rule": "Extend the dev-only latency button to offer a shape dropdown. On click it invokes `latency_run_load_shape`, streams `shape_step_boundary` events to the UI so the operator sees progress, and displays the `LoadShapeSummary` with failed_budgets highlighted."
+      }
+    ],
+    "test_obligations": [
+      "Unit test: load_shapes.json parses into the typed struct.",
+      "Unit test: `{run_id}` placeholder substitution is deterministic per invocation.",
+      "Unit test: precondition check for `was_voice` + non-voice session_id returns a typed error, not a panic.",
+      "Integration test (gated behind an env flag, NOT run in CI fork-bomb-free mode): shape `warm_multi_turn` end-to-end. Skipped on CI, only run by the operator locally with ollama up."
+    ]
+  },
+  "interference_simulator_spec": {
+    "title": "Interference Simulator — deterministic background-load injection",
+    "summary": "Shape #5 (`background_interference`) requires the user turn to land mid-tick for a specific background loop. Waiting for the natural 15-min consolidator tick is not reproducible. The simulator deterministically starts a single background tick ~100ms before the user turn, and captures the overlap.",
+    "mechanism": {
+      "flag": "Env var SUNNY_LATENCY_INTERFERENCE=<source>, where source ∈ {consolidator, skillSynthesizer, memoryWriter, ambient_classifier}.",
+      "trigger_api": [
+        "New dev-only Tauri command: `interference_fire_once(source: String) -> Result<(), String>`. Calls the same function the natural tick calls (consolidator.ts:tick, skillSynthesis.ts:tick, memoryWriter.ts:flush, ambient_classifier::classify_once), but bypasses the rate-gate + the `tickInFlight` guard for this one call.",
+        "Called by `latency_run_load_shape` ~100ms before the chain step's turn_start. The shape's precondition checker asserts `interference_active: true` was achieved (the command succeeded)."
+      ],
+      "safety": [
+        "The command is `#[cfg(debug_assertions)]` only; shipped release bundles can't invoke it.",
+        "Rate-gate bypass is a per-call flag — the natural tick path is unaffected.",
+        "If the source isn't implemented yet (e.g. ambient_classifier lacks a `classify_once` hook), the simulator returns a typed `unsupported_source` error; the shape's variant is marked `skipped` rather than `failed`."
+      ]
+    },
+    "attribution": {
+      "rule": "During the user turn, JSONL lines from both the user's `RUN_CTX.scope` AND the background loop's own markers will be written. The background loop does NOT run inside a RUN_CTX scope, so ITS internal markers are normally no-ops. We add an explicit `interference_<stage>` marker family that writes unconditionally with {source, ts_ms} fields — those lines attribute background work to the simulator without tainting production marker semantics."
+    },
+    "reporting": {
+      "rule": "LoadShapeSummary for shape #5 MUST include `{interference_source, interference_overlap_ms}` where overlap_ms is the milliseconds the background tick was executing inside the user turn's [turn_start, turn_end] window. If overlap_ms < 50, fail the run as `interference_did_not_land` — the simulator didn't actually race the turn."
+    },
+    "non_goals": [
+      "No simulated user TYPING interference — typing is not a load source for the LLM.",
+      "No simulated filesystem / network outage — that's fault injection territory, a different agent's scope.",
+      "No stacking multiple interference sources in one run. One source per variant; run the four variants separately."
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "cold_glm_provider_warmup",
+  "expected_tools": [],
+  "id": "cold_glm_02",
+  "latency_class": "cold_first_invocation",
+  "memory_depth": "none",
+  "notes": "GLM-5.1 provider cold \u2014 handshake on first call. Fallback: warm ollama qwen3.5.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": false,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "0bab1e19ce386ff3dd68910d608d3bb7e3c4c266e806a79a0ebb366d74653229",
+  "sla_budget_ms": {
+    "first_token": 3500,
+    "full_response": 6000,
+    "prep_context": 800
+  },
+  "trigger": "typed_hud",
+  "user_message": "Explain closures in JavaScript in two sentences.",
+  "write_severity": "read_only"
+}

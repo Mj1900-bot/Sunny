@@ -1,0 +1,31 @@
+{
+  "adversarial": false,
+  "category": "memory_recall_cross_session",
+  "expected_tools": [
+    "memory_recall"
+  ],
+  "id": "mrr_02",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "cross_session_semantic",
+  "notes": "Requires pre-seeded memory corpus across >=2 sessions >24h old.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "memory_index_warm": true,
+    "ollama_warm": true,
+    "requires_memory_facts": [
+      "seeded across >=2 prior sessions"
+    ],
+    "requires_sessions_older_than_hours": 24
+  },
+  "sha256": "e902fe1a35f9092e082af1be95babaabf7eed07810dbb4dd4e9a6a27c938f954",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Remind me \u2014 which library did I pick for the graph layout?",
+  "write_severity": "read_only"
+}

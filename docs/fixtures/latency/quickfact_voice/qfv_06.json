@@ -1,0 +1,25 @@
+{
+  "adversarial": false,
+  "category": "quickfact_voice",
+  "expected_tools": [],
+  "id": "qfv_06",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Kokoro must stream first audio <= 2000ms. Pre-requires kokoro_warm.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "7e07c4409d30eb77d4d83de38a0badf6ae87d54a53fc0b3b01df9d5705b13a59",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Give me a calm one-sentence greeting.",
+  "write_severity": "read_only"
+}

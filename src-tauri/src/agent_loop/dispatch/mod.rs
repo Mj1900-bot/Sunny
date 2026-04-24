@@ -71,6 +71,12 @@ pub async fn dispatch_tool(
     // shadowing the policy / constitution / confirm refusal `reason`
     // locals further down this function.
     model_reason: Option<&str>,
+    // Turn ID shared across every tool call in this iteration so the
+    // schema-v9 `tool_usage.turn_id` FK lets the analyzer reassemble
+    // multi-tool turns. Passed by core.rs::run_staged_tools — legacy
+    // call sites (tests, ad-hoc invocations) pass `None` and write
+    // NULL the same way the back-compat `record()` shim does.
+    turn_id: Option<&str>,
 ) -> ToolOutput {
     let t0 = Instant::now();
     let name = call.name.clone();
@@ -98,12 +104,13 @@ pub async fn dispatch_tool(
             severity: Severity::Warn,
         });
         let msg = format!("panic mode active — {name} refused");
-        let _ = crate::memory::tool_usage::record(
+        let _ = crate::memory::tool_usage::record_with_turn(
             &name,
             false,
             0,
             Some(&msg),
             model_reason,
+            turn_id,
         );
         return wrap_error(&name, "panic_mode", msg, false);
     }
@@ -129,7 +136,7 @@ pub async fn dispatch_tool(
             match security::shell_safety::verdict(cmd) {
                 Ok(_hits) => { /* warn-level only; preview will show */ }
                 Err(msg) => {
-                    let _ = crate::memory::tool_usage::record(&name, false, 0, Some(&msg), model_reason);
+                    let _ = crate::memory::tool_usage::record_with_turn(&name, false, 0, Some(&msg), model_reason, turn_id);
                     security::emit(SecurityEvent::ToolCall {
                         at: security::now(),
                         id: event_id.clone(),
@@ -153,7 +160,7 @@ pub async fn dispatch_tool(
     // race the panic flag flipping.
     if outbound_hits.iter().any(|f| f.kind == "canary") {
         let msg = "outbound content contains canary — refused".to_string();
-        let _ = crate::memory::tool_usage::record(&name, false, 0, Some(&msg), model_reason);
+        let _ = crate::memory::tool_usage::record_with_turn(&name, false, 0, Some(&msg), model_reason, turn_id);
         return wrap_error(&name, "canary_denied", msg, false);
     }
 
@@ -194,7 +201,7 @@ pub async fn dispatch_tool(
             duration_ms: Some(0),
             severity: Severity::Warn,
         });
-        let _ = crate::memory::tool_usage::record(&name, false, 0, Some(&msg), model_reason);
+        let _ = crate::memory::tool_usage::record_with_turn(&name, false, 0, Some(&msg), model_reason, turn_id);
         return wrap_error(&name, "role_scope_denied", msg, false);
     }
 
@@ -203,8 +210,8 @@ pub async fn dispatch_tool(
         Ok(nc) => nc,
         Err(reason) => {
             let msg = format!("policy: {reason}");
-            let _ = crate::memory::tool_usage::record(
-                &name, false, 0, Some(&msg), model_reason,
+            let _ = crate::memory::tool_usage::record_with_turn(
+                &name, false, 0, Some(&msg), model_reason, turn_id,
             );
             security::emit(SecurityEvent::ToolCall {
                 at: security::now(),
@@ -251,8 +258,8 @@ pub async fn dispatch_tool(
         let con = crate::constitution::current();
         if let crate::constitution::Decision::Block(reason) = con.check_tool(&name, &input_s) {
             let msg = format!("constitution: {reason}");
-            let _ = crate::memory::tool_usage::record(
-                &name, false, 0, Some(&msg), model_reason,
+            let _ = crate::memory::tool_usage::record_with_turn(
+                &name, false, 0, Some(&msg), model_reason, turn_id,
             );
             security::emit(SecurityEvent::ToolCall {
                 at: security::now(),
@@ -284,12 +291,13 @@ pub async fn dispatch_tool(
              (binary blob or vision payload). Ask the user to try this one with \
              the HUD open, or pick a different tool."
         );
-        let _ = crate::memory::tool_usage::record(
+        let _ = crate::memory::tool_usage::record_with_turn(
             &name,
             false,
             t0.elapsed().as_millis() as i64,
             Some(&msg),
             model_reason,
+            turn_id,
         );
         security::emit(SecurityEvent::ToolCall {
             at: security::now(),
@@ -323,12 +331,13 @@ pub async fn dispatch_tool(
                 "voice_confirm_unavailable: this tool needs visual confirmation — \
                  ask again with the HUD open, or type the request into the chat panel."
                     .to_string();
-            let _ = crate::memory::tool_usage::record(
+            let _ = crate::memory::tool_usage::record_with_turn(
                 &name,
                 false,
                 t0.elapsed().as_millis() as i64,
                 Some(&msg),
                 model_reason,
+                turn_id,
             );
             security::emit(SecurityEvent::ToolCall {
                 at: security::now(),
@@ -353,12 +362,13 @@ pub async fn dispatch_tool(
             preview_suffix.as_deref(),
         ).await {
             let msg = format!("user declined: {reason}");
-            let _ = crate::memory::tool_usage::record(
+            let _ = crate::memory::tool_usage::record_with_turn(
                 &name,
                 false,
                 t0.elapsed().as_millis() as i64,
                 Some(&msg),
                 model_reason,
+                turn_id,
             );
             security::emit(SecurityEvent::ToolCall {
                 at: security::now(),
@@ -450,7 +460,7 @@ pub async fn dispatch_tool(
     } else {
         Some(output.display.as_str())
     };
-    let _ = crate::memory::tool_usage::record(&name, output.ok, elapsed_ms, err_msg, model_reason);
+    let _ = crate::memory::tool_usage::record_with_turn(&name, output.ok, elapsed_ms, err_msg, model_reason, turn_id);
 
     // Final ToolCall row — carries the verdict + sizes for the audit feed.
     let sev = match (output.ok, dangerous) {

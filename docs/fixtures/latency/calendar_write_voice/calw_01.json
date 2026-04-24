@@ -1,0 +1,30 @@
+{
+  "adversarial": false,
+  "category": "calendar_write_voice",
+  "expected_tools": [
+    "calendar_create_event"
+  ],
+  "id": "calw_01",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "none",
+  "notes": "Create standard 1h block; ConfirmGate renders title/time/duration. ConfirmGate over voice \u2014 fixture does NOT auto-run; harness stubs confirm.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "calendar_permission": true,
+    "confirm_gate_required": true,
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": true,
+    "ollama_warm": true
+  },
+  "sha256": "7677b87bc3fbbb8ea4887a6d87ef18f6f665897ba6b7537344783e4a6a415297",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Add a meeting with Alex tomorrow at 2pm for one hour.",
+  "write_severity": "reversible_write"
+}

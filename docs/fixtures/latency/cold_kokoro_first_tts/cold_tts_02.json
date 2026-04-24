@@ -1,0 +1,25 @@
+{
+  "adversarial": false,
+  "category": "cold_kokoro_first_tts",
+  "expected_tools": [],
+  "id": "cold_tts_02",
+  "latency_class": "cold_first_invocation",
+  "memory_depth": "none",
+  "notes": "First TTS call. Kokoro must load. First-audio budget relaxed.",
+  "output_channel": "tts_kokoro",
+  "pre_conditions": {
+    "cpal_device_ready": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "aec68444cf089e0e3a24c93e8a38f6d7ccfc658e70db43e7ca687b62b5c10edb",
+  "sla_budget_ms": {
+    "first_token": 3500,
+    "full_response": 6000,
+    "prep_context": 800
+  },
+  "trigger": "voice_cpal",
+  "user_message": "Read me this sentence: the quick brown fox jumps over the lazy dog.",
+  "write_severity": "read_only"
+}

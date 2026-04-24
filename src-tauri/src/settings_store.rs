@@ -157,6 +157,32 @@ impl Default for ProviderSettings {
     }
 }
 
+/// Memory subsystem knobs. The embedder infrastructure runs on by
+/// default; the kill-switch here is for the operator who wants to
+/// pause the backfill loop (e.g. on battery, or to keep Ollama
+/// responsive for the voice turn when the DB is in a long cold-fill).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemorySettings {
+    /// When false, the embedding backfill loop still spawns but skips
+    /// every tick. Freshly-written rows continue to embed via
+    /// `spawn_embed_for` on the write path — this only gates the
+    /// batched catch-up walk over older rows.
+    #[serde(default = "default_true")]
+    pub backfill_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for MemorySettings {
+    fn default() -> Self {
+        Self {
+            backfill_enabled: true,
+        }
+    }
+}
+
 /// Top-level settings struct.  Every sub-struct is `#[serde(default)]` so
 /// old settings files with missing sections migrate automatically.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -173,6 +199,8 @@ pub struct SunnySettings {
     pub voice: VoiceSettings,
     #[serde(default)]
     pub providers: ProviderSettings,
+    #[serde(default)]
+    pub memory: MemorySettings,
 }
 
 impl Default for SunnySettings {
@@ -184,6 +212,7 @@ impl Default for SunnySettings {
             trust_level: TrustLevel::default(),
             voice: VoiceSettings::default(),
             providers: ProviderSettings::default(),
+            memory: MemorySettings::default(),
         }
     }
 }

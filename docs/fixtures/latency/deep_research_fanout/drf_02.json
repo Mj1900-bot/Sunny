@@ -1,0 +1,32 @@
+{
+  "adversarial": false,
+  "category": "deep_research_fanout",
+  "expected_tools": [
+    "spawn_subagent",
+    "deep_research",
+    "web_search",
+    "web_fetch"
+  ],
+  "id": "drf_02",
+  "latency_class": "background_unbounded",
+  "memory_depth": "same_session",
+  "notes": "Background task; fanout cap of 4 sub-agents enforced at scheduler.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "allow_network": true,
+    "background_allowed": true,
+    "fanout_cap": 4,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "7a55c688c1885c71262b125d7deaf6d74b18bd008978ca0c3e91918c27574759",
+  "sla_budget_ms": {
+    "first_token": 3000,
+    "full_response": 30000,
+    "prep_context": 500
+  },
+  "trigger": "typed_hud",
+  "user_message": "Deep-research the best multi-agent orchestration frameworks as of April 2026.",
+  "write_severity": "read_only"
+}

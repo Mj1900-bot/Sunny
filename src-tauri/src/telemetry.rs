@@ -73,6 +73,119 @@ pub struct TelemetryEvent {
     /// deserialise so old ring events remain valid without a migration.
     #[serde(default)]
     pub tier: Option<String>,
+
+    // -----------------------------------------------------------------
+    // Stage-split timing (v9). All fields are Option<u64> so legacy
+    // events (pre-stage-split) and partial-stage events (e.g. a turn
+    // that timed out before first token) still serialise cleanly.
+    // -----------------------------------------------------------------
+
+    /// Time spent preparing the prompt before the request hit the wire —
+    /// memory-pack build, context compression, router decision. Measured
+    /// in `core.rs::call_llm` from turn entry to just before the provider
+    /// call.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub prep_ms: Option<u64>,
+
+    /// Time-to-first-token. For streaming providers this is the elapsed
+    /// wall-clock from request-send to the first non-empty delta. For
+    /// buffered (non-streaming) providers it is equal to `duration_ms`
+    /// (whole response arrived at once).
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub ttft_ms: Option<u64>,
+
+    /// Time spent generating after the first token — `duration_ms - ttft_ms`
+    /// on streaming turns, 0 on buffered turns.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub generate_ms: Option<u64>,
+
+    /// Wall-clock time spent running tools this turn (aggregate across
+    /// parallel safe tools + serial dangerous tools). 0 on text-only
+    /// turns.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub tool_dispatch_ms: Option<u64>,
+
+    /// Wall-clock time the critic/refiner took to review the draft before
+    /// the final text was committed. 0 when the critic was skipped
+    /// (Finalizing arm budget-elapsed, or SimpleLookup task_class).
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub critic_ms: Option<u64>,
+
+    /// Stable per-turn identifier. Matches `turn_id` on `tool_usage` rows
+    /// so all tool calls in a turn can be reassembled with a single join.
+    /// `None` only for events synthesised outside the agent loop (very
+    /// rare — retained as Option for forward compatibility).
+    #[serde(default)]
+    pub turn_id: Option<String>,
+
+    /// K4 task classifier result ("Factual", "Creative", "SimpleLookup", ...).
+    /// Propagated from `LoopCtx.task_class` at record time. `None` when
+    /// the classifier hasn't run yet (e.g. sub-agent recursion that
+    /// bypassed the classifier).
+    #[serde(default)]
+    pub task_class: Option<String>,
+
+    /// True when the turn originated on the voice surface. Determined by
+    /// `core_helpers::is_voice_session(session_id)` at record time.
+    #[serde(default)]
+    pub was_voice: bool,
+
+    /// Iteration index within the current agent run (0 = first pass, 1 =
+    /// after first tool round-trip, …). `None` when unknown.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub iteration: Option<u32>,
+
+    /// Discriminator for the persisted row. `"ok"` for completed turns,
+    /// `"timeout"` for the sentinel row the budget-elapsed arm writes,
+    /// `"error"` / `"max_tokens"` for failure modes. Keeps the in-memory
+    /// ring homogeneous while letting the persistent table answer "how
+    /// often do we time out?" in one query.
+    #[serde(default = "default_event_kind")]
+    pub kind: String,
+
+    /// Optional session identifier (for correlating multi-turn voice/
+    /// AUTO sessions). Stored on the persistent row; not indexed by
+    /// default — add an index if a hot query emerges.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+fn default_event_kind() -> String {
+    "ok".to_string()
+}
+
+impl Default for TelemetryEvent {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            input: 0,
+            cache_read: 0,
+            cache_create: 0,
+            output: 0,
+            duration_ms: 0,
+            at: 0,
+            cost_usd: 0.0,
+            tier: None,
+            prep_ms: None,
+            ttft_ms: None,
+            generate_ms: None,
+            tool_dispatch_ms: None,
+            critic_ms: None,
+            turn_id: None,
+            task_class: None,
+            was_voice: false,
+            iteration: None,
+            kind: default_event_kind(),
+            session_id: None,
+        }
+    }
 }
 
 /// Aggregate rollup over the entire retained ring. Drives the four
@@ -195,20 +308,108 @@ fn events_ring() -> &'static Mutex<VecDeque<TelemetryEvent>> {
     RING.get_or_init(|| Mutex::new(VecDeque::with_capacity(CAP_EVENTS)))
 }
 
-/// Append a telemetry event to the ring. Evicts the oldest entry when
-/// the buffer is already at [`CAP_EVENTS`]. Lock poisoning recovers
+/// Append a telemetry event to the ring **and** the persistent
+/// `llm_turns` sqlite table. Evicts the oldest ring entry when the
+/// buffer is already at [`CAP_EVENTS`]. Lock poisoning recovers
 /// gracefully — a panic on a previous call shouldn't silently stop
 /// telemetry for the rest of the session.
+///
+/// Sqlite persistence is fail-open: a DB error is logged at `warn` and
+/// swallowed, because telemetry must never break the agent loop. The
+/// in-memory ring is always updated first so a DB outage doesn't lose
+/// the BrainPage live feed.
 pub fn record_llm_turn(event: TelemetryEvent) {
-    let ring = events_ring();
-    let mut guard = match ring.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if guard.len() >= CAP_EVENTS {
-        guard.pop_front();
+    // 1. In-memory ring — the existing BrainPage live feed.
+    {
+        let ring = events_ring();
+        let mut guard = match ring.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.len() >= CAP_EVENTS {
+            guard.pop_front();
+        }
+        guard.push_back(event.clone());
     }
-    guard.push_back(event);
+    // 2. Persistent sqlite sink — Wave-2 SLA work. Best-effort; errors
+    //    log at `warn` and do NOT propagate.
+    if let Err(e) = persist_llm_turn(&event, None) {
+        log::warn!("telemetry: persist_llm_turn failed: {e}");
+    }
+}
+
+/// Write a sentinel `turn_timeout` row to the persistent `llm_turns`
+/// table. Called from `core.rs` when `budget_elapsed()` fires so SLA
+/// analysis can answer "what fraction of turns hit the 120 s ceiling
+/// on voice Factual queries?" without reconstructing the failure mode
+/// from log files.
+///
+/// `event` carries the best-effort picture of the turn at the moment it
+/// timed out (iteration count, accumulated stage timings, task_class,
+/// was_voice, session_id). `kind` on the event should be "timeout"; the
+/// helper enforces that regardless of what the caller set so we can't
+/// write a mis-labelled sentinel.
+pub fn record_turn_timeout(mut event: TelemetryEvent, note: &str) {
+    event.kind = "timeout".to_string();
+    // Do NOT push a timeout row into the ring — the in-memory feed is
+    // for completed turns and the timeout sentinel would skew aggregate
+    // rates. Persist only.
+    if let Err(e) = persist_llm_turn(&event, Some(note)) {
+        log::warn!("telemetry: persist timeout row failed: {e}");
+    }
+}
+
+/// Insert one event into the persistent `llm_turns` table. Fail-open
+/// wrapper; callers use [`record_llm_turn`] and [`record_turn_timeout`]
+/// rather than calling this directly.
+fn persist_llm_turn(event: &TelemetryEvent, error_msg: Option<&str>) -> Result<(), String> {
+    use crate::memory::db::with_conn;
+    with_conn(|c| {
+        c.execute(
+            "INSERT INTO llm_turns (
+                turn_id, run_id, kind, provider, model, tier,
+                task_class, was_voice, session_id,
+                input_tokens, output_tokens, cache_read, cache_create,
+                cost_usd, duration_ms,
+                prep_ms, ttft_ms, generate_ms, tool_dispatch_ms, critic_ms,
+                iteration, error_msg, at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13,
+                ?14, ?15,
+                ?16, ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23
+             )",
+            rusqlite::params![
+                event.turn_id,
+                Option::<String>::None, // run_id: populated by harness scope (see latency_harness::stage_marker)
+                event.kind,
+                event.provider,
+                event.model,
+                event.tier,
+                event.task_class,
+                if event.was_voice { 1 } else { 0 },
+                event.session_id,
+                event.input as i64,
+                event.output as i64,
+                event.cache_read as i64,
+                event.cache_create as i64,
+                event.cost_usd,
+                event.duration_ms as i64,
+                event.prep_ms.map(|v| v as i64),
+                event.ttft_ms.map(|v| v as i64),
+                event.generate_ms.map(|v| v as i64),
+                event.tool_dispatch_ms.map(|v| v as i64),
+                event.critic_ms.map(|v| v as i64),
+                event.iteration.map(|v| v as i64),
+                error_msg,
+                event.at,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| format!("insert llm_turns: {e}"))
+    })
 }
 
 /// Internal snapshot helper — clones the ring under the lock so
@@ -315,6 +516,7 @@ mod tests {
             at: 0,
             cost_usd: 0.0,
             tier: None,
+            ..Default::default()
         }
     }
 

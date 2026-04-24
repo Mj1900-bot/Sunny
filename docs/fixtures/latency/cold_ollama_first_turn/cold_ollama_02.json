@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "cold_ollama_first_turn",
+  "expected_tools": [],
+  "id": "cold_ollama_02",
+  "latency_class": "cold_first_invocation",
+  "memory_depth": "none",
+  "notes": "First turn after ollama cold-start. prep_context budget relaxed.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": false
+  },
+  "sha256": "fd534a3b6bfd25ca1e009df11bd04656b9ca0c9f75d53efa376973347f51f095",
+  "sla_budget_ms": {
+    "first_token": 3500,
+    "full_response": 6000,
+    "prep_context": 800
+  },
+  "trigger": "typed_hud",
+  "user_message": "Give me a one-sentence summary of dependency injection.",
+  "write_severity": "read_only"
+}

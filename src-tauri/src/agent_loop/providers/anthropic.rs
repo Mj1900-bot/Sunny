@@ -60,7 +60,14 @@ pub struct AnthropicUsage {
 /// turn, and mirror the numbers into the cross-provider telemetry ring
 /// so BrainPage can show a live rollup. Called from both the buffered
 /// and streaming paths — hence the `path` label in the log line.
-fn log_cache_usage(path: &str, usage: Option<&AnthropicUsage>, model: &str, duration_ms: u64) {
+fn log_cache_usage(
+    path: &str,
+    usage: Option<&AnthropicUsage>,
+    model: &str,
+    duration_ms: u64,
+    ttft_ms: Option<u64>,
+    turn_id: Option<&str>,
+) {
     if let Some(u) = usage {
         let denom = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
         let hit_pct = if denom > 0 {
@@ -83,6 +90,15 @@ fn log_cache_usage(path: &str, usage: Option<&AnthropicUsage>, model: &str, dura
             u.cache_read_input_tokens,
             u.cache_creation_input_tokens,
         );
+        // TTFT is only meaningful when the SSE driver measured it. On
+        // buffered turns the whole response arrives at once — no real
+        // first-token signal exists, so we persist NULL instead of a
+        // placeholder that would pollute p95 latency calculations.
+        // SQL analyses should filter `WHERE ttft_ms IS NOT NULL` when
+        // computing TTFT percentiles; `generate_ms` is left NULL in
+        // lockstep so (ttft + generate ≈ duration) stays a true
+        // invariant on streaming rows only.
+        let generate_ms = ttft_ms.map(|t| duration_ms.saturating_sub(t));
         record_llm_turn(TelemetryEvent {
             provider: "anthropic".to_string(),
             model: model.to_string(),
@@ -94,6 +110,10 @@ fn log_cache_usage(path: &str, usage: Option<&AnthropicUsage>, model: &str, dura
             at: chrono::Utc::now().timestamp(),
             cost_usd,
             tier: None,    // K5 wires this via route_model; None until then
+            ttft_ms,
+            generate_ms,
+            turn_id: turn_id.map(|s| s.to_string()),
+            ..Default::default()
         });
     } else {
         log::debug!("anthropic cache [{path}]: usage field absent from response");
@@ -161,7 +181,7 @@ pub async fn anthropic_turn(
         .map_err(|e| format!("anthropic decode: {e}"))?;
 
     let duration_ms = started.elapsed().as_millis() as u64;
-    log_cache_usage("buffered", parsed.usage.as_ref(), model, duration_ms);
+    log_cache_usage("buffered", parsed.usage.as_ref(), model, duration_ms, None, None);
 
     // Warn and annotate the reply when the model hit the token ceiling.
     // This is the buffered path; the streaming path handles it in message_delta.
@@ -242,7 +262,7 @@ pub async fn anthropic_turn_streaming(
     }
 
     match drive_sse_stream(app, resp, model, started, &turn_id).await? {
-        StreamResult::Final { text } => {
+        StreamResult::Final { text, ttft_ms: _ } => {
             // Terminal chunk: zero-delta chunk so the frontend's
             // loading indicator clears cleanly. We don't re-send the
             // full text as a chunk body — it already streamed
@@ -607,8 +627,11 @@ fn outcome_from_blocks(blocks: Vec<AnthropicContentBlock>) -> TurnOutcome {
 
 enum StreamResult {
     /// Clean end-of-stream with all blocks being text. `text` is the
-    /// concatenation of every `text_delta` we observed.
-    Final { text: String },
+    /// concatenation of every `text_delta` we observed. `ttft_ms` is
+    /// the wall-clock ms from `started` (passed in by the caller) to
+    /// the first non-empty text_delta; `None` when the stream ended
+    /// without emitting user-visible text.
+    Final { text: String, ttft_ms: Option<u64> },
     /// A `content_block_start` announced a `tool_use` block. We stop
     /// parsing immediately — the caller re-issues with stream=false so
     /// the buffered path can handle tool dispatch.
@@ -632,6 +655,7 @@ async fn drive_sse_stream(
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut accumulated = String::new();
+    let mut ttft_ms: Option<u64> = None;
     // Track the active content block's type so we route deltas
     // correctly. `Some("text")` → append to accumulated + emit delta.
     // `Some("tool_use")` → we'll short-circuit once we see the start.
@@ -747,6 +771,18 @@ async fn drive_sse_stream(
                             .and_then(|t| t.as_str())
                         {
                             if !delta.is_empty() {
+                                if ttft_ms.is_none() {
+                                    let elapsed = started.elapsed().as_millis() as u64;
+                                    ttft_ms = Some(elapsed);
+                                    log::info!("anthropic ttft: {elapsed}ms (first text_delta)");
+                                    crate::latency_harness::stage_marker(
+                                        crate::latency_harness::stages::FIRST_TOKEN,
+                                        Some(serde_json::json!({
+                                            "provider": "anthropic",
+                                            "ttft_ms": elapsed,
+                                        })),
+                                    );
+                                }
                                 accumulated.push_str(delta);
                                 publish(SunnyEvent::ChatChunk {
                                     seq: 0,
@@ -803,8 +839,15 @@ async fn drive_sse_stream(
                 }
                 "message_stop" => {
                     let duration_ms = started.elapsed().as_millis() as u64;
-                    log_cache_usage("streaming", Some(&usage), model, duration_ms);
-                    return Ok(StreamResult::Final { text: accumulated });
+                    log_cache_usage(
+                        "streaming",
+                        Some(&usage),
+                        model,
+                        duration_ms,
+                        ttft_ms,
+                        Some(turn_id),
+                    );
+                    return Ok(StreamResult::Final { text: accumulated, ttft_ms });
                 }
                 "ping" => {
                     // Keep-alive ping — ignore.
@@ -827,7 +870,7 @@ async fn drive_sse_stream(
     // Stream ended without a `message_stop`. Return whatever we
     // accumulated so the caller can still surface a partial.
     log::warn!("anthropic SSE: stream closed without message_stop");
-    Ok(StreamResult::Final { text: accumulated })
+    Ok(StreamResult::Final { text: accumulated, ttft_ms })
 }
 
 /// Locate the first SSE frame boundary in `buf`. Returns a tuple of

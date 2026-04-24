@@ -1,0 +1,24 @@
+{
+  "adversarial": false,
+  "category": "quickfact_typed",
+  "expected_tools": [],
+  "id": "qft_01",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "none",
+  "notes": "Zero-tool LLM answer; measures prep_context + stream latency only.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true
+  },
+  "sha256": "83902df5bcb3522099ccc752e0311819251361b20242976c4c26dc26a2715437",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "What is the capital of France?",
+  "write_severity": "read_only"
+}

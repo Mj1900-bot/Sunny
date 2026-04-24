@@ -1,0 +1,28 @@
+{
+  "adversarial": false,
+  "category": "mail_triage_read",
+  "expected_tools": [
+    "mail_list_unread"
+  ],
+  "id": "mtr_02",
+  "latency_class": "interactive_sub_2s",
+  "memory_depth": "same_session",
+  "notes": "Read-only Apple Mail. Fixture needs seeded inbox. No ConfirmGate.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "fixture_inbox_seeded": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "mail_permission": true,
+    "ollama_warm": true
+  },
+  "sha256": "b6e4597af6c692b6f13fc49fe65eae5df8532ac60e76cb4dd6d98a8585e3e165",
+  "sla_budget_ms": {
+    "first_token": 1200,
+    "full_response": 2000,
+    "prep_context": 200
+  },
+  "trigger": "typed_hud",
+  "user_message": "Show me unread mail from today.",
+  "write_severity": "read_only"
+}

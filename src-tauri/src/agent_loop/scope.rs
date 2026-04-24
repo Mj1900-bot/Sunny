@@ -124,6 +124,12 @@ pub fn allowed_tools_for_role(role: &str) -> BTreeSet<String> {
             s.extend(memory_write_tools());
             s.insert("memory_compact".into());
             s.insert("spawn_subagent".into());
+            // Multi-source research composites — the cartographer noted
+            // the researcher role previously couldn't invoke its own
+            // headline composites.
+            s.insert("deep_research".into());
+            s.insert("web_browse".into());
+            s.insert("summarize_pdf".into());
         }
         "coder" => {
             s.extend(reading_tools());
@@ -131,6 +137,19 @@ pub fn allowed_tools_for_role(role: &str) -> BTreeSet<String> {
             s.insert("py_run".into());
             s.insert("claude_code_supervise".into());
             s.insert("spawn_subagent".into());
+            // Git write + GitHub CLI — a coder sub-agent that can't
+            // commit, push, or open a PR is half a coder. Read-only
+            // git lives in `base_tools`.
+            s.insert("git_commit".into());
+            s.insert("git_push".into());
+            s.insert("git_branch_create".into());
+            s.insert("git_branch_switch".into());
+            s.insert("git_clone".into());
+            s.insert("gh_pr_create".into());
+            s.insert("gh_pr_list".into());
+            s.insert("gh_pr_view".into());
+            s.insert("gh_issue_create".into());
+            s.insert("gh_issue_list".into());
         }
         "browser_driver" => {
             s.extend(reading_tools());
@@ -173,6 +192,9 @@ fn base_tools() -> BTreeSet<String> {
         "time_in_city", "stock_quote",
         "memory_recall",
         "agent_message", "agent_wait",
+        // Git read-only — every role routinely benefits from being
+        // able to inspect the working tree without escalation.
+        "git_status", "git_diff", "git_log",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -191,6 +213,21 @@ fn reading_tools() -> BTreeSet<String> {
         "system_metrics", "battery_status",
         "focused_window", "screen_ocr", "screen_capture_full",
         "clipboard_history",
+        // Document readers — every read-oriented role (summariser /
+        // researcher / critic) routinely needs to open a PDF, XLSX,
+        // DOCX, or CSV handed to it. Keeping them gated was an
+        // oversight surfaced by the Wave-1 capability cartographer.
+        "pdf_extract_text", "pdf_extract_tables", "pdf_metadata",
+        "csv_read", "xlsx_read", "docx_extract_text",
+        "document_summarize",
+        // Spotlight / file discovery — read-only.
+        "spotlight_search", "spotlight_recent_files",
+        "file_tag_search", "file_tag_list",
+        // Image and active-screen reads.
+        "describe_image_file", "ocr_image_file", "screen_find_text",
+        // Scheduler introspection — inspecting the schedule is strictly
+        // read-only. Writes stay in `writer_write_tools`.
+        "schedule_list", "schedule_history",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -207,8 +244,16 @@ fn web_tools() -> BTreeSet<String> {
 }
 
 fn browser_tools() -> BTreeSet<String> {
+    // Canonical browser stack for sub-agents is the headless Chromium
+    // CDP driver (tab_id-addressable, no UI disturbance). The legacy
+    // Safari osascript tools (`browser_open`, `browser_read_page_text`)
+    // remain registered for main-agent use but are excluded here — a
+    // `browser_driver` sub-agent should never steal the user's focus.
     [
-        "browser_open", "browser_read_page_text",
+        "browser_cdp_open", "browser_cdp_click", "browser_cdp_type",
+        "browser_cdp_read", "browser_cdp_wait", "browser_cdp_eval",
+        "browser_cdp_screenshot", "browser_cdp_close_tab",
+        "browser_cdp_list_tabs",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -229,6 +274,12 @@ fn writer_write_tools() -> BTreeSet<String> {
         "reminders_add",
         "calendar_create_event",
         "scheduler_add",
+        // Scheduler v2 writes — the writer role already "schedules
+        // follow-ups" per the doc-comment; the v2 API just does it
+        // with a more expressive interface.
+        "schedule_once",
+        "schedule_recurring",
+        "schedule_cancel",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -236,14 +287,10 @@ fn writer_write_tools() -> BTreeSet<String> {
 }
 
 /// Memory tools beyond `memory_recall` (which is in `base_tools`).
-/// `memory_search` is included proactively for forward-compatibility
-/// even though it is not yet wired into the catalog — unknown names
-/// in an allowlist are harmless (they just never match a dispatch).
 fn memory_write_tools() -> BTreeSet<String> {
     [
         "memory_remember",
         "memory_recall",
-        "memory_search",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -307,7 +354,7 @@ mod tests {
         let allowed = allowed_tools_for_role("planner");
         for tool in [
             "scheduler_add", "spawn_subagent", "plan_execute",
-            "memory_remember", "memory_recall", "memory_search",
+            "memory_remember", "memory_recall",
         ] {
             assert!(
                 allowed.contains(tool),
@@ -321,7 +368,7 @@ mod tests {
         let allowed = allowed_tools_for_role("researcher");
         for tool in [
             "memory_remember", "memory_recall",
-            "memory_search", "memory_compact",
+            "memory_compact",
         ] {
             assert!(
                 allowed.contains(tool),

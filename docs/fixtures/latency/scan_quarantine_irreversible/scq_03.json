@@ -1,0 +1,31 @@
+{
+  "adversarial": false,
+  "category": "scan_quarantine_irreversible",
+  "expected_tools": [
+    "scan_findings",
+    "scan_quarantine"
+  ],
+  "id": "scq_03",
+  "latency_class": "interactive_streaming",
+  "memory_depth": "same_session",
+  "notes": "Irreversible file move. Hard ConfirmGate. Prior findings must be seeded.",
+  "output_channel": "text_hud",
+  "pre_conditions": {
+    "auto_run_allowed": false,
+    "confirm_gate_required": true,
+    "glm_warm": true,
+    "kokoro_warm": false,
+    "ollama_warm": true,
+    "prior_scan_findings_present": true,
+    "requires_scan_subsystem": true
+  },
+  "sha256": "ac177cd48667507b0334cb758763ff8a7ab4e1bd4efcdf2fce6b9c62272eff4a",
+  "sla_budget_ms": {
+    "first_token": 1500,
+    "full_response": 4000,
+    "prep_context": 250
+  },
+  "trigger": "typed_hud",
+  "user_message": "Quarantine finding #3 from the most recent scan report.",
+  "write_severity": "irreversible_write"
+}

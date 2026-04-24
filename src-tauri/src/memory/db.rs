@@ -20,7 +20,7 @@ const SUBDIR_NAME: &str = "memory";
 const DB_FILENAME: &str = "memory.sqlite";
 const LEGACY_JSONL: &str = "memory.jsonl"; // under ~/.sunny (the old location)
 
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -349,6 +349,7 @@ fn apply_migrations(conn: &Connection, from: u32, to: u32) -> Result<(), String>
             6 => migration_v6(conn)?,
             7 => migration_v7(conn)?,
             8 => migration_v8(conn)?,
+            9 => migration_v9(conn)?,
             other => return Err(format!("unknown migration target v{other}")),
         }
     }
@@ -661,6 +662,92 @@ fn migration_v8(conn: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|e| format!("add signer_fingerprint: {e}"))?;
+    }
+    Ok(())
+}
+
+/// v9 — persistent LLM-turn telemetry + tool-to-turn foreign key.
+///
+/// Two changes land together because they were designed as a single
+/// diagnostic surface for the 2-second SLA work (Wave-1 scout):
+///
+/// 1. New `llm_turns` table. Before v9 the telemetry ring was capped at
+///    500 events and evaporated on restart, so any cross-session SLA
+///    analysis was impossible. The row schema matches the stage-split
+///    `TelemetryEvent` (see `telemetry.rs::TelemetryEvent`):
+///    `prep_ms`, `ttft_ms`, `generate_ms`, `tool_dispatch_ms`,
+///    `critic_ms` in addition to the legacy `duration_ms`. `task_class`
+///    and `was_voice` are denormalised onto the row so a single
+///    GROUP-BY query answers "p95 TTFT on voice Factual turns".
+///
+///    `turn_id` is the cross-table join key — matches `tool_usage.turn_id`
+///    so multi-tool turns can be reassembled by a single SQL query.
+///    `kind` discriminates between completed turns (`ok`, `error`,
+///    `max_tokens`) and the sentinel row the agent loop writes when
+///    `budget_elapsed()` fires (`timeout`).
+///
+/// 2. `tool_usage.turn_id` FK column. Nullable because historical rows
+///    (pre-v9) have no associated turn, and because some tool calls
+///    originate outside the main agent loop (daemons, scheduler
+///    templates) and don't belong to an `llm_turns` row. Indexed for
+///    the common "all tool calls in turn X" reassembly query.
+///
+/// Idempotent via `PRAGMA table_info` checks on both tables.
+fn migration_v9(conn: &Connection) -> Result<(), String> {
+    // --- llm_turns table ------------------------------------------------
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS llm_turns (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            turn_id         TEXT NOT NULL,
+            run_id          TEXT,
+            kind            TEXT NOT NULL DEFAULT 'ok',
+            provider        TEXT NOT NULL,
+            model           TEXT NOT NULL,
+            tier            TEXT,
+            task_class      TEXT,
+            was_voice       INTEGER NOT NULL DEFAULT 0 CHECK (was_voice IN (0, 1)),
+            session_id      TEXT,
+            input_tokens    INTEGER NOT NULL DEFAULT 0,
+            output_tokens   INTEGER NOT NULL DEFAULT 0,
+            cache_read      INTEGER NOT NULL DEFAULT 0,
+            cache_create    INTEGER NOT NULL DEFAULT 0,
+            cost_usd        REAL NOT NULL DEFAULT 0.0,
+            duration_ms     INTEGER NOT NULL DEFAULT 0,
+            prep_ms         INTEGER,
+            ttft_ms         INTEGER,
+            generate_ms     INTEGER,
+            tool_dispatch_ms INTEGER,
+            critic_ms       INTEGER,
+            iteration       INTEGER,
+            error_msg       TEXT,
+            at              INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_llm_turns_at         ON llm_turns (at DESC);
+        CREATE INDEX IF NOT EXISTS ix_llm_turns_turn_id    ON llm_turns (turn_id);
+        CREATE INDEX IF NOT EXISTS ix_llm_turns_run_id     ON llm_turns (run_id);
+        CREATE INDEX IF NOT EXISTS ix_llm_turns_provider   ON llm_turns (provider, at DESC);
+        CREATE INDEX IF NOT EXISTS ix_llm_turns_voice_cls  ON llm_turns (was_voice, task_class, at DESC);
+        "#,
+    )
+    .map_err(|e| format!("create llm_turns: {e}"))?;
+
+    // --- tool_usage.turn_id FK column -----------------------------------
+    let has_col: bool = conn
+        .prepare("PRAGMA table_info(tool_usage)")
+        .map_err(|e| format!("pragma prep: {e}"))?
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| format!("pragma query: {e}"))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "turn_id");
+    if !has_col {
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN turn_id TEXT", [])
+            .map_err(|e| format!("add turn_id: {e}"))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_tool_usage_turn_id ON tool_usage (turn_id)",
+            [],
+        )
+        .map_err(|e| format!("create ix_tool_usage_turn_id: {e}"))?;
     }
     Ok(())
 }

@@ -190,6 +190,7 @@ pub async fn kimi_turn(model: &str, system: &str, history: &[Value]) -> Result<T
             cache_read,
             0,
         );
+        let total_ms = started.elapsed().as_millis() as u64;
         record_llm_turn(TelemetryEvent {
             provider: "kimi".to_string(),
             model: model.to_string(),
@@ -197,10 +198,14 @@ pub async fn kimi_turn(model: &str, system: &str, history: &[Value]) -> Result<T
             cache_read,
             cache_create: 0,
             output: output_tok,
-            duration_ms: started.elapsed().as_millis() as u64,
+            duration_ms: total_ms,
             at: chrono::Utc::now().timestamp(),
             cost_usd,
             tier: None,
+            // Buffered path: TTFT == total, generate == 0.
+            ttft_ms: Some(total_ms),
+            generate_ms: Some(0),
+            ..Default::default()
         });
     }
 
@@ -362,7 +367,7 @@ pub async fn kimi_turn_streaming(
     }
 
     match drive_openai_sse_stream("kimi", resp, &turn_id).await? {
-        OpenAiSseResult::Final { text, usage } => {
+        OpenAiSseResult::Final { text, usage, ttft_ms } => {
             publish(SunnyEvent::ChatChunk {
                 seq: 0,
                 boot_epoch: 0,
@@ -377,13 +382,14 @@ pub async fn kimi_turn_streaming(
                 .and_then(|u| serde_json::from_value::<KimiUsage>(u.clone()).ok())
                 .map(|u| (u.prompt_tokens, u.completion_tokens, u.cached_tokens))
                 .unwrap_or((0, 0, 0));
+            let total_ms = started.elapsed().as_millis() as u64;
             log::info!(
                 "kimi tokens: input={} output={} cache_read={} model={} duration_ms={}",
                 input_tok,
                 output_tok,
                 cache_read,
                 model,
-                started.elapsed().as_millis(),
+                total_ms,
             );
             let cost_usd = crate::telemetry::cost_estimate(
                 "kimi",
@@ -392,6 +398,7 @@ pub async fn kimi_turn_streaming(
                 cache_read,
                 0,
             );
+            let generate_ms = ttft_ms.map(|t| total_ms.saturating_sub(t));
             record_llm_turn(TelemetryEvent {
                 provider: "kimi".to_string(),
                 model: model.to_string(),
@@ -399,10 +406,14 @@ pub async fn kimi_turn_streaming(
                 cache_read,
                 cache_create: 0,
                 output: output_tok,
-                duration_ms: started.elapsed().as_millis() as u64,
+                duration_ms: total_ms,
                 at: chrono::Utc::now().timestamp(),
                 cost_usd,
                 tier: None,
+                ttft_ms,
+                generate_ms,
+                turn_id: Some(turn_id.clone()),
+                ..Default::default()
             });
 
             Ok(TurnOutcome::Final { text, streamed: true })
